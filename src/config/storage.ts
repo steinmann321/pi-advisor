@@ -1,12 +1,20 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { isRecord, isString } from "../content-utils.ts";
 import type { RecordValue } from "../content-utils.ts";
-import { applyConfig, resetDefaults } from "./defaults.ts";
+import { applyConfig, applyProjectConfig, resetDefaults } from "./defaults.ts";
+import {
+  canonicalProjectDirectory,
+  projectProfileEntry,
+  PROJECT_PROFILES_KEY,
+  selectProjectProfile,
+  validateProjectOverrides,
+} from "./project-profiles.ts";
+import type { ProjectOverrides } from "./project-profiles.ts";
 import {
   CONFIG_SCHEMA,
   configuredModelRef,
@@ -17,20 +25,16 @@ import { setAdvisorOutcomeLoggingRef, setPersistedModelRefs } from "./state.ts";
 import type { AdvisorConfig } from "./types.ts";
 import { unknownConfigKeys, validateConfig } from "./validation.ts";
 
-export const configPaths = (ctx: ExtensionContext) => [
-  ctx.isProjectTrusted()
-    ? join(ctx.cwd, CONFIG_DIR_NAME, "advisor.json")
-    : null,
+export const configPaths = (_ctx: ExtensionContext) => [
   join(getAgentDir(), "advisor.json"),
 ];
 
 type SavedConfigKey = PersistedConfigKey;
-type ConfigState = {
-  [Key in SavedConfigKey]: AdvisorConfig[Key];
-};
+type ConfigState = { [Key in SavedConfigKey]: AdvisorConfig[Key] };
+type StoredConfig = AdvisorConfig & RecordValue;
 
 const currentConfigState = (): ConfigState =>
-  // SAFETY: SAVED_CONFIG_KEYS enumerates exactly the ConfigState keys, so fromEntries yields ConfigState.
+  // SAFETY: SAVED_CONFIG_KEYS enumerates ConfigState keys from CONFIG_SCHEMA.
   Object.fromEntries(
     SAVED_CONFIG_KEYS.map((key) => [key, CONFIG_SCHEMA[key].current()])
   ) as ConfigState;
@@ -38,10 +42,10 @@ const currentConfigState = (): ConfigState =>
 const sameConfigValue = <Value>(left: Value, right: Value) =>
   JSON.stringify(left) === JSON.stringify(right);
 
-/** Keys advisor.json may hold that are not AdvisorConfig settings but are
- * still legitimate (hand-placed secrets). They stay out of CONFIG_SCHEMA, are
- * preserved like any unknown key, and never trigger the typo warning. */
-const RESERVED_ADVISOR_JSON_KEYS = new Set(["typesafe_api_key"]);
+const RESERVED_ADVISOR_JSON_KEYS = new Set([
+  "typesafe_api_key",
+  PROJECT_PROFILES_KEY,
+]);
 
 export const readExistingConfig = (path: string): RecordValue => {
   try {
@@ -84,44 +88,32 @@ const applyChangedConfigValues = (
   if (dropped.size === 0) {
     return data;
   }
-  const retained: RecordValue = {};
-  for (const key of Object.keys(data)) {
-    if (!dropped.has(key)) {
-      retained[key] = data[key];
-    }
-  }
-  return retained;
+  return Object.fromEntries(
+    Object.entries(data).filter(([key]) => !dropped.has(key))
+  );
 };
 
-// Tracks the last load/save state so a later save merges fresh disk contents instead of overwriting an external edit.
 let loadedConfigState: ConfigState | undefined;
 let loadedConfigPath: string | undefined;
 
-const readConfig = (path: string): AdvisorConfig => {
-  const config = JSON.parse(readFileSync(path, "utf-8"));
+const readConfig = (path: string): StoredConfig => {
+  const config: unknown = JSON.parse(readFileSync(path, "utf-8"));
   validateConfig(config, path);
-  return config;
+  // SAFETY: validateConfig accepted config as AdvisorConfig and JSON object.
+  return config as StoredConfig;
 };
 
-// loadConfig runs per tool call and consultation; caching by path and stat
-// identity keeps the parse off the hot path while still reset-applying each call.
 const configCache = new Map<
   string,
-  { config: AdvisorConfig; identity: string }
+  { config: StoredConfig; identity: string }
 >();
 const warnedUnknownConfigIdentities = new Set<string>();
 
-/** Drops the parsed-configuration cache; the next load re-reads from disk. */
 export const resetConfigCache = () => {
   configCache.clear();
   warnedUnknownConfigIdentities.clear();
 };
 
-/**
- * Nanosecond timestamps plus size and inode so a same-millisecond or
- * same-size external rewrite cannot be served from the cache. An unstattable
- * path yields a unique value, which always forces a re-read.
- */
 const configIdentity = (path: string): string => {
   try {
     const stats = statSync(path, { bigint: true });
@@ -131,7 +123,7 @@ const configIdentity = (path: string): string => {
   }
 };
 
-const readConfigCached = (path: string): AdvisorConfig => {
+const readConfigCached = (path: string): StoredConfig => {
   const identity = configIdentity(path);
   const cached = configCache.get(path);
   if (cached?.identity === identity) {
@@ -142,49 +134,65 @@ const readConfigCached = (path: string): AdvisorConfig => {
   return config;
 };
 
-export const loadConfig = (_ctx: ExtensionContext) => {
-  resetDefaults();
-  const global = join(getAgentDir(), "advisor.json");
-  const globalConfig = existsSync(global)
-    ? readConfigCached(global)
-    : undefined;
-  setPersistedModelRefs(
-    configuredModelRef(globalConfig?.advisor),
-    configuredModelRef(globalConfig?.executor)
-  );
-  if (globalConfig) {
-    applyConfig(globalConfig);
-    const unknownKeys = unknownConfigKeys(globalConfig).filter(
-      (key) => !RESERVED_ADVISOR_JSON_KEYS.has(key)
-    );
-    const warningIdentity = `${global}:${configIdentity(global)}`;
-    if (
-      unknownKeys.length > 0 &&
-      _ctx.hasUI &&
-      !warnedUnknownConfigIdentities.has(warningIdentity)
-    ) {
-      _ctx.ui.notify(
-        `Advisor configuration at ${global} contains unrecognized key(s) ${unknownKeys.map((key) => JSON.stringify(key)).join(", ")}. They were preserved but ignored; check for typos or upgrade pi-advisor.`,
-        "warning"
-      );
-      warnedUnknownConfigIdentities.add(warningIdentity);
-    }
+const loadGlobalConfig = (ctx: ExtensionContext, path: string) => {
+  const config = existsSync(path) ? readConfigCached(path) : undefined;
+  if (!config) {
+    return;
   }
-  // Repository-controlled project configuration is never applied. Models,
-  // prompts, gates, budgets, disclosure, redaction, integrations, and consent
-  // remain under the user's global Pi configuration.
-  setAdvisorOutcomeLoggingRef(globalConfig?.advisorOutcomeLogging === true);
-  loadedConfigState = currentConfigState();
-  loadedConfigPath = global;
-  return existsSync(global) ? global : null;
+  const unknownKeys = unknownConfigKeys(config).filter(
+    (key) => !RESERVED_ADVISOR_JSON_KEYS.has(key)
+  );
+  const warningIdentity = `${path}:${configIdentity(path)}`;
+  if (
+    unknownKeys.length > 0 &&
+    ctx.hasUI &&
+    !warnedUnknownConfigIdentities.has(warningIdentity)
+  ) {
+    ctx.ui.notify(
+      `Advisor configuration at ${path} contains unrecognized key(s) ${unknownKeys.map((key) => JSON.stringify(key)).join(", ")}. They were preserved but ignored; check for typos or upgrade pi-advisor.`,
+      "warning"
+    );
+    warnedUnknownConfigIdentities.add(warningIdentity);
+  }
+  return config;
 };
 
-/**
- * Saves user-controlled configuration globally without outcome consent.
- *
- * Only values changed since the last load/save are written. This lets an
- * external edit to advisor.json coexist with a later settings or model save.
- */
+export const loadConfig = (ctx: ExtensionContext) => {
+  resetDefaults();
+  const path = join(getAgentDir(), "advisor.json");
+  const globalConfig = loadGlobalConfig(ctx, path);
+  const selected = selectProjectProfile(
+    globalConfig?.[PROJECT_PROFILES_KEY],
+    ctx.cwd
+  );
+  if (selected && !ctx.isProjectTrusted()) {
+    throw new Error(
+      `Project profile at ${selected.path} is unavailable because Pi does not trust ${canonicalProjectDirectory(ctx.cwd)}.`
+    );
+  }
+  if (globalConfig) {
+    applyConfig(globalConfig);
+  }
+  if (selected) {
+    applyProjectConfig(selected.profile.overrides);
+  }
+  setPersistedModelRefs(
+    configuredModelRef(
+      selected?.profile.overrides.advisor ?? globalConfig?.advisor
+    ),
+    configuredModelRef(
+      selected?.profile.overrides.executor ?? globalConfig?.executor
+    )
+  );
+  setAdvisorOutcomeLoggingRef(
+    selected?.profile.overrides.advisorOutcomeLogging ??
+      globalConfig?.advisorOutcomeLogging === true
+  );
+  loadedConfigState = currentConfigState();
+  loadedConfigPath = path;
+  return existsSync(path) ? path : null;
+};
+
 export interface SaveConfigOptions {
   persistAdvisor?: boolean;
   persistExecutor?: boolean;
@@ -237,7 +245,28 @@ export const saveConfig = (
   return path;
 };
 
-/** Outcome logging is deliberately written only to the global Pi configuration. */
+export const saveProjectConfig = (
+  ctx: ExtensionContext,
+  overrides: ProjectOverrides
+) => {
+  if (!ctx.isProjectTrusted()) {
+    throw new Error("Project profiles require Pi Project Trust.");
+  }
+  const path = join(getAgentDir(), "advisor.json");
+  const target = canonicalProjectDirectory(ctx.cwd);
+  const existing = readExistingConfig(path);
+  const profiles = isRecord(existing[PROJECT_PROFILES_KEY])
+    ? { ...existing[PROJECT_PROFILES_KEY] }
+    : {};
+  profiles[target] = projectProfileEntry(validateProjectOverrides(overrides));
+  writeFileSync(
+    path,
+    `${JSON.stringify({ ...existing, [PROJECT_PROFILES_KEY]: profiles }, null, 2)}\n`
+  );
+  resetConfigCache();
+  return path;
+};
+
 export const saveGlobalOutcomeLogging = (enabled: boolean) => {
   const path = join(getAgentDir(), "advisor.json");
   const existing = readExistingConfig(path);

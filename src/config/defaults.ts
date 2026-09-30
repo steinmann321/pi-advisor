@@ -285,3 +285,22 @@ export const applyConfig = (config: AdvisorConfig) => {
     setAdvisorOutcomeLoggingRef
   );
 };
+
+export const applyProjectConfig = (config: AdvisorConfig) => {
+  applyConfig(config);
+  if ("advisor" in config) {
+    setAdvisorRef(config.advisor ?? "");
+  }
+  if ("executor" in config) {
+    setExecutorRef(config.executor ?? "");
+  }
+  if (config.advisorEffort === "") {
+    setAdvisorEffortRef(undefined);
+  }
+  if (config.executorEffort === "") {
+    setExecutorEffortRef(undefined);
+  }
+  if (config.advisorJevModel === "") {
+    setAdvisorJevModelRef(undefined);
+  }
+};
