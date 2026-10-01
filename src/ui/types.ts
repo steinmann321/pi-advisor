@@ -3,6 +3,7 @@ import type { KeybindingsManager, TUI } from "@earendil-works/pi-tui";
 
 import type { GateFailureMode } from "../config/types.ts";
 import type { GitContextLevel } from "../git.ts";
+import type { SettingsEditScope } from "./settings-scope.ts";
 
 export interface RenderRequester {
   requestRender: () => void;
@@ -118,9 +119,16 @@ export interface AdvisorSettingsSelectorOptions {
   modelRefs?: string[];
   onCancel: () => void;
   onChange?: (settings: AdvisorSettings) => void;
+  onRemoveProfile?: () => AdvisorSettings | undefined;
+  onResetOverride?: (id: string) => AdvisorSettings | undefined;
+  onSettingChange?: (
+    id: string,
+    settings: AdvisorSettings
+  ) => AdvisorSettings | undefined;
   /** @deprecated Use onChange; retained for extensions embedding this component. */
   onSave?: (settings: AdvisorSettings) => void;
   presets: ContextPreset[];
+  scope?: SettingsEditScope;
   theme: Theme;
   tui: RenderRequester;
 }

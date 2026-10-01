@@ -4,8 +4,14 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   effectiveExecutorEffort,
   effectiveExecutorRef,
+  isMarkedSubagent,
 } from "./child-session.ts";
 import { advisorScoutTimeoutMsRef } from "./config/state.ts";
+import {
+  effectiveModelSourceDescription,
+  getEffectiveConfigSnapshot,
+} from "./config/storage.ts";
+import type { EffectiveConfigSnapshot } from "./config/storage.ts";
 import { isRecord, isString } from "./content-utils.ts";
 import { collectTextStream, resolveConfiguredModel } from "./model-stream.ts";
 import type {
@@ -293,14 +299,30 @@ const streamScoutResponse = async (
   }
 };
 
+// oxlint-disable-next-line complexity -- Scout owns cancellation, fallback, stream, and protocol boundaries.
 export const runAdvisorScout = async (
   ctx: ExtensionContext,
   manifest: ScoutManifest,
   parentSignal?: AbortSignal,
   onEvent?: (event: ScoutLifecycleEvent) => void,
-  timeoutMs = advisorScoutTimeoutMsRef,
-  dependencies: ScoutDependencies = defaultDependencies
+  timeoutMs?: number,
+  dependencies: ScoutDependencies = defaultDependencies,
+  configuration?: EffectiveConfigSnapshot
 ): Promise<ScoutOutcome> => {
+  const effectiveConfiguration = configuration ?? getEffectiveConfigSnapshot();
+  const markedSubagent = isMarkedSubagent();
+  const scoutTimeoutMs = timeoutMs ?? advisorScoutTimeoutMsRef;
+  const executorModel =
+    configuration && !markedSubagent
+      ? configuration.executor
+      : effectiveExecutorRef(ctx);
+  const executorEffort =
+    configuration && !markedSubagent
+      ? configuration.executorEffort
+      : effectiveExecutorEffort(ctx);
+  const executorProvenance = markedSubagent
+    ? "Source: host-selected subagent model."
+    : effectiveModelSourceDescription(effectiveConfiguration.executorSource);
   const startedAt = Date.now();
   const publish = (event: ScoutLifecycleEvent) => {
     onEvent?.(event);
@@ -321,7 +343,7 @@ export const runAdvisorScout = async (
         usage === undefined
           ? baseMetrics(manifest, startedAt)
           : { ...baseMetrics(manifest, startedAt), usage },
-      model: effectiveExecutorRef(ctx),
+      model: executorModel,
       ok: false as const,
     };
     publish({ outcome, type: "fallback" });
@@ -332,11 +354,14 @@ export const runAdvisorScout = async (
     return cancelled();
   }
 
-  const executorModel = effectiveExecutorRef(ctx);
-  const executorEffort = effectiveExecutorEffort(ctx);
   let resolved: ResolvedConfiguredModel;
   try {
-    resolved = await dependencies.resolve(ctx, executorModel, "Scout");
+    resolved = await dependencies.resolve(
+      ctx,
+      executorModel,
+      "Scout",
+      executorProvenance
+    );
   } catch (error) {
     if (parentSignal?.aborted) {
       return cancelled();
@@ -357,7 +382,7 @@ export const runAdvisorScout = async (
     executorEffort,
     manifest,
     parentSignal,
-    timeoutMs,
+    scoutTimeoutMs,
     publish
   );
   if (!streamed.ok) {

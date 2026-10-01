@@ -1,5 +1,10 @@
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import { SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+  Key,
+  matchesKey,
+  SettingsList,
+  truncateToWidth,
+} from "@earendil-works/pi-tui";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 
 import {
@@ -12,6 +17,7 @@ import {
 } from "./settings-items.ts";
 import { SettingsListAdapter } from "./settings-list-adapter.ts";
 import { mutateAdvisorSettings } from "./settings-mutations.ts";
+import { settingConfigKey } from "./settings-scope.ts";
 import type {
   AdvisorSettings,
   AdvisorSettingsSelectorOptions,
@@ -71,13 +77,43 @@ export class AdvisorSettingsSelector implements Component, Focusable {
       "border",
       "─".repeat(Math.max(1, width))
     );
-    return [border, ...this.settingsList.render(width), border].map((line) =>
-      truncateToWidth(line, width)
-    );
+    const { scope } = this.options;
+    let scopeLines: string[] = [];
+    if (scope?.kind === "project") {
+      scopeLines = [
+        this.options.theme.fg(
+          "muted",
+          `  Scope: For this project · ${scope.target}`
+        ),
+        this.options.theme.fg(
+          "dim",
+          `  Overrides marked in row detail. Backspace removes selected override.${scope.inheritedProfilePath ? ` Parent profile: ${scope.inheritedProfilePath}` : ""}`
+        ),
+      ];
+    } else if (scope) {
+      scopeLines = [
+        this.options.theme.fg(
+          "muted",
+          "  Scope: Global · defaults for projects without an override"
+        ),
+      ];
+    }
+    return [
+      border,
+      ...scopeLines,
+      ...this.settingsList.render(width),
+      border,
+    ].map((line) => truncateToWidth(line, width));
   }
 
   handleInput(keyData: string): void {
-    if (
+    const resetId =
+      matchesKey(keyData, Key.backspace) || keyData === "\u007F"
+        ? this.settingsList.selectedIdForReset()
+        : undefined;
+    if (resetId) {
+      this.resetOverride(resetId);
+    } else if (
       !this.settingsList.changeWithArrow(keyData, (id, value) =>
         this.change(id, value)
       )
@@ -107,6 +143,7 @@ export class AdvisorSettingsSelector implements Component, Focusable {
       effortLevels: this.options.effortLevels,
       modelWhitelist,
       presets: this.presets,
+      scope: this.options.scope,
       settings: this.settings,
       theme: this.options.theme,
       tui: this.options.tui,
@@ -144,7 +181,28 @@ export class AdvisorSettingsSelector implements Component, Focusable {
   }
 
   private change(id: string, value: string): void {
-    mutateAdvisorSettings(this.settings, id, value, this.presets);
+    if (id === "removeProjectProfile" && value === "remove") {
+      if (this.options.onRemoveProfile?.()) {
+        this.options.onCancel();
+      }
+      return;
+    }
+    const next = {
+      ...this.settings,
+      modelWhitelist: [...(this.settings.modelWhitelist ?? [])],
+      toolPolicies: { ...this.settings.toolPolicies },
+    };
+    mutateAdvisorSettings(next, id, value, this.presets);
+    const saved = this.options.onSettingChange?.(id, next);
+    if (this.options.onSettingChange && !saved) {
+      this.settingsList = this.createSettingsList(id);
+      return;
+    }
+    Object.assign(this.settings, saved ?? next);
+    this.afterChange(id);
+  }
+
+  private afterChange(id: string): void {
     if (id === "simpleMode") {
       if (this.settings.simpleMode) {
         this.startSimpleModeGradient();
@@ -152,11 +210,13 @@ export class AdvisorSettingsSelector implements Component, Focusable {
         this.stopSimpleModeGradient();
       }
     }
-    (this.options.onChange ?? this.options.onSave)?.({
-      ...this.settings,
-      showUsageDetails: this.settings.showUsageDetails ?? true,
-      toolPolicies: { ...this.settings.toolPolicies },
-    });
+    if (!this.options.onSettingChange) {
+      (this.options.onChange ?? this.options.onSave)?.({
+        ...this.settings,
+        showUsageDetails: this.settings.showUsageDetails ?? true,
+        toolPolicies: { ...this.settings.toolPolicies },
+      });
+    }
     if (
       id === "context" ||
       id === "simpleMode" ||
@@ -166,5 +226,27 @@ export class AdvisorSettingsSelector implements Component, Focusable {
     ) {
       this.settingsList = this.createSettingsList(id);
     }
+  }
+
+  private resetOverride(id: string): void {
+    const { scope } = this.options;
+    const key = settingConfigKey(id);
+    if (
+      scope?.kind !== "project" ||
+      !key ||
+      !scope.overrideKeys.includes(key)
+    ) {
+      return;
+    }
+    const settings = this.options.onResetOverride?.(id);
+    if (!settings) {
+      return;
+    }
+    Object.assign(this.settings, settings);
+    this.options.scope = {
+      ...scope,
+      overrideKeys: scope.overrideKeys.filter((override) => override !== key),
+    };
+    this.settingsList = this.createSettingsList(id);
   }
 }

@@ -62,6 +62,7 @@ const runSettingsCommand = async (handler, context, change) => {
         selector.handleInput("\u001B");
       }),
     notify: noop,
+    select: async () => "Global",
   };
   await handler("", { ...context, ui });
   return rendered;

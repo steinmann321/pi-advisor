@@ -1,11 +1,16 @@
 import {
   alwaysOnRef,
   getAdvisorSettings,
-  getPersistedModelRefs,
   setAlwaysOnRef,
 } from "../config/state.ts";
-import { saveConfig } from "../config/storage.ts";
+import {
+  getProjectSettingsProfile,
+  readGlobalConfig,
+  updateGlobalConfigValues,
+} from "../config/storage.ts";
+import type { SettingsEditScope } from "../ui/settings-scope.ts";
 import { AdvisorSettingsSelector } from "../ui/settings-selector.ts";
+import type { AdvisorSettings } from "../ui/types.ts";
 import { loadCommandConfig } from "./activation-preparation.ts";
 import {
   CONTEXT_PRESETS,
@@ -13,18 +18,64 @@ import {
   getConfiguredModelRefs,
 } from "./model-options.ts";
 import { notify } from "./runtime.ts";
-import { saveAdvisorSettings } from "./settings-persistence.ts";
+import {
+  getGlobalAdvisorSettings,
+  removeProjectAdvisorSettings,
+  resetProjectAdvisorSetting,
+  saveScopedAdvisorSetting,
+} from "./settings-persistence.ts";
+import { selectSettingsScope } from "./settings-scope-selection.ts";
 import type { CommandRuntime } from "./types.ts";
 
 export const registerSettingsCommands = (runtime: CommandRuntime) => {
   runtime.pi.registerCommand("advisor-settings", {
     description: "Configure Advisor settings",
     handler: async (_args, ctx) => {
-      if (!(loadCommandConfig(ctx) && ctx.hasUI)) {
+      if (!ctx.hasUI) {
+        return;
+      }
+      try {
+        readGlobalConfig(ctx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        notify(
+          ctx,
+          `Advisor command could not load configuration: ${message} Fix advisor.json and retry.`,
+          "error"
+        );
+        return;
+      }
+      const selected = await selectSettingsScope(ctx);
+      if (!selected) {
         return;
       }
 
-      const initial = getAdvisorSettings();
+      let initial: AdvisorSettings;
+      let scope: SettingsEditScope;
+      try {
+        if (selected.kind === "global") {
+          initial = getGlobalAdvisorSettings(ctx);
+          scope = selected;
+        } else {
+          if (!loadCommandConfig(ctx)) {
+            return;
+          }
+          const profile = getProjectSettingsProfile(ctx);
+          initial = getAdvisorSettings();
+          scope = {
+            inheritedProfilePath: profile.inheritedProfilePath,
+            kind: "project" as const,
+            overrideKeys: profile.overrideKeys,
+            profileExists: profile.profileExists,
+            target: profile.target,
+          };
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Could not load Advisor settings: ${message}`, "error");
+        return;
+      }
+
       await ctx.ui.custom<undefined>(
         (tui, theme, keybindings, done) =>
           new AdvisorSettingsSelector({
@@ -33,11 +84,56 @@ export const registerSettingsCommands = (runtime: CommandRuntime) => {
             keybindings,
             modelRefs: getConfiguredModelRefs(ctx),
             onCancel: () => done(undefined),
-            onChange: (settings) => {
+            onRemoveProfile: () => {
               try {
-                saveAdvisorSettings(ctx, settings);
+                const settings = removeProjectAdvisorSettings(ctx);
+                if (settings) {
+                  runtime.updateSameModelNotice(ctx);
+                  runtime.updateAdvisorUsageStatus(ctx);
+                }
+                return settings;
+              } catch (error) {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                ctx.ui.notify(
+                  `Could not remove project profile: ${message}`,
+                  "error"
+                );
+                return undefined;
+              }
+            },
+            onResetOverride: (id) => {
+              if (scope.kind !== "project") {
+                return undefined;
+              }
+              try {
+                const settings = resetProjectAdvisorSetting(ctx, id);
+                if (settings) {
+                  runtime.updateSameModelNotice(ctx);
+                  runtime.updateAdvisorUsageStatus(ctx);
+                }
+                return settings;
+              } catch (error) {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                ctx.ui.notify(
+                  `Could not reset project override: ${message}`,
+                  "error"
+                );
+                return undefined;
+              }
+            },
+            onSettingChange: (id, settings) => {
+              try {
+                const saved = saveScopedAdvisorSetting(
+                  ctx,
+                  scope,
+                  id,
+                  settings
+                );
                 runtime.updateSameModelNotice(ctx);
                 runtime.updateAdvisorUsageStatus(ctx);
+                return saved;
               } catch (error) {
                 const message =
                   error instanceof Error ? error.message : String(error);
@@ -45,9 +141,11 @@ export const registerSettingsCommands = (runtime: CommandRuntime) => {
                   `Could not save Advisor settings: ${message}`,
                   "error"
                 );
+                return undefined;
               }
             },
             presets: CONTEXT_PRESETS,
+            scope,
             theme,
             tui,
           })
@@ -70,12 +168,8 @@ export const registerSettingsCommands = (runtime: CommandRuntime) => {
       // Leaving alwaysOn set would silently reactivate the flow next session.
       const wasAlwaysOn = alwaysOnRef;
       if (wasAlwaysOn) {
-        const persisted = getPersistedModelRefs();
         setAlwaysOnRef(false);
-        saveConfig(ctx, {
-          persistAdvisor: Boolean(persisted.advisor),
-          persistExecutor: Boolean(persisted.executor),
-        });
+        updateGlobalConfigValues(ctx, { alwaysOn: false });
       }
       notify(
         ctx,

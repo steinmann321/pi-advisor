@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { advisorScoutEnabledRef, executorRef } from "./config/state.ts";
+import type { EffectiveConfigSnapshot } from "./config/storage.ts";
 import {
   buildScoutManifest,
   reconstructScoutConversation,
@@ -21,7 +22,8 @@ export const curateAdvisorConversation = async (
   runScout: typeof runAdvisorScout = runAdvisorScout,
   currentInvocationId?: string,
   maxChars?: number,
-  imageNonce = ""
+  imageNonce = "",
+  configuration?: EffectiveConfigSnapshot
 ): Promise<{
   conversation: string;
   scout?: Exclude<ScoutOutcome, { cancelled: true }>;
@@ -56,7 +58,15 @@ export const curateAdvisorConversation = async (
     onScout?.({ outcome: scout, type: "fallback" });
     return { conversation: legacyConversation, scout };
   }
-  const outcome = await runScout(ctx, built.manifest, signal, onScout);
+  const outcome = await runScout(
+    ctx,
+    built.manifest,
+    signal,
+    onScout,
+    undefined,
+    undefined,
+    configuration
+  );
   if (!outcome.ok && outcome.cancelled) {
     throw signal?.reason instanceof Error
       ? signal.reason

@@ -17,6 +17,7 @@ import {
 import { isValidAdvisorToolPolicies } from "../config/validation.ts";
 import { JevSetupSubmenu } from "./jev-setup-submenu.ts";
 import { SearchableModelMultiSelector } from "./model-multi-selector.ts";
+import { ProfileRemovalSubmenu } from "./profile-removal-submenu.ts";
 import {
   contextDescription,
   currentContextLabel,
@@ -27,6 +28,8 @@ import {
   TOGGLE_VALUES,
   withCurrentValue,
 } from "./settings-formatting.ts";
+import { settingConfigKey } from "./settings-scope.ts";
+import type { SettingsEditScope } from "./settings-scope.ts";
 import { TextSettingSubmenu } from "./text-setting-submenu.ts";
 import type {
   AdvisorSettings,
@@ -38,6 +41,7 @@ export interface SettingsItemsOptions {
   effortLevels: string[];
   modelWhitelist: SettingItem;
   presets: ContextPreset[];
+  scope?: SettingsEditScope;
   settings: AdvisorSettings;
   theme: Theme;
   tui: RenderRequester;
@@ -250,10 +254,57 @@ export const advisorModelWhitelistItem = (
     }),
 });
 
+const withScopeProvenance = (
+  items: SettingItem[],
+  scope: SettingsEditScope | undefined,
+  theme: Theme,
+  tui: RenderRequester
+): SettingItem[] => {
+  if (scope?.kind !== "project") {
+    return items;
+  }
+  const overrides = new Set(scope.overrideKeys);
+  const inheritedFrom = scope.inheritedProfilePath
+    ? `parent profile ${scope.inheritedProfilePath}`
+    : "global/default settings";
+  const scopedItems = items.map((item) => {
+    const key = settingConfigKey(item.id);
+    const provenance =
+      key && overrides.has(key)
+        ? "Project override."
+        : `Inherited from ${inheritedFrom}.`;
+    return {
+      ...item,
+      description: `${provenance} ${item.description ?? ""}`.trim(),
+    };
+  });
+  if (!scope.profileExists) {
+    return scopedItems;
+  }
+  return [
+    {
+      currentValue: "Enter",
+      description: `Delete overrides for ${scope.target}. Values then use ${inheritedFrom}; provider may change.`,
+      id: "removeProjectProfile",
+      label: "Remove this project profile",
+      submenu: (_currentValue, done) =>
+        new ProfileRemovalSubmenu({
+          onCancel: () => done(),
+          onConfirm: () => done("remove"),
+          text: `Remove overrides for ${scope.target}. Settings then use ${inheritedFrom}; Advisor provider may change.`,
+          theme,
+          tui,
+        }),
+    },
+    ...scopedItems,
+  ];
+};
+
 export const createSettingsItems = ({
   effortLevels,
   modelWhitelist,
   presets,
+  scope,
   settings,
   theme,
   tui,
@@ -294,7 +345,7 @@ export const createSettingsItems = ({
         true
       )
     );
-    return items;
+    return withScopeProvenance(items, scope, theme, tui);
   }
 
   items.push(
@@ -550,5 +601,5 @@ export const createSettingsItems = ({
     ),
     ...jevItems(settings, theme, tui)
   );
-  return items;
+  return withScopeProvenance(items, scope, theme, tui);
 };

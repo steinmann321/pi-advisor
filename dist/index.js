@@ -821,11 +821,27 @@ var validateConfig = (value, path = "advisor.json") => {
 
 // src/config/args.ts
 var ARGUMENT_WHITESPACE = /\s+/u;
+var tokens = (args) => args.trim().split(ARGUMENT_WHITESPACE).filter(Boolean);
+var parseAdvisorPersistenceScope = (args) => {
+  let scope;
+  for (const token of tokens(args)) {
+    const [key, value] = token.split("=");
+    if (key !== "scope") {
+      continue;
+    }
+    if (value !== "global" && value !== "project") {
+      return "scope must be global or project.";
+    }
+    scope = value;
+  }
+  return scope;
+};
+var hasContextMaxCharsOverride = (args) => tokens(args).some((token) => token.split("=")[0] === "contextMaxChars");
 var parseArgs = (args) => {
   let nextExecutor = executorRef;
   let nextAdvisor = advisorRef;
   let nextContextMaxChars = contextMaxCharsRef;
-  for (const token of args.trim().split(ARGUMENT_WHITESPACE).filter(Boolean)) {
+  for (const token of tokens(args)) {
     const [key, value] = token.split("=");
     if (key === "executor" && value) {
       nextExecutor = value;
@@ -845,6 +861,100 @@ var parseArgs = (args) => {
   setAdvisorRef(nextAdvisor);
   setContextMaxCharsRef(nextContextMaxChars);
 };
+
+// src/config/project-profiles.ts
+import { realpathSync } from "node:fs";
+import { isAbsolute, resolve, sep } from "node:path";
+var PROJECT_PROFILES_KEY = "projectProfiles";
+var CONFIG_KEYS2 = new Set(configKeys);
+var canonicalProjectDirectory = (path) => {
+  const absolute = resolve(path);
+  try {
+    return realpathSync.native(absolute);
+  } catch {
+    return absolute;
+  }
+};
+var isAncestorPath = (ancestor, descendant) => ancestor === descendant || descendant.startsWith(`${ancestor}${sep}`);
+var invalidProfile = (path, detail) => {
+  throw new TypeError(`Invalid project profile at ${path}: ${detail}.`);
+};
+var validateOverrides = (value, path) => {
+  if (!isRecord(value)) {
+    return invalidProfile(path, "overrides must be a JSON object");
+  }
+  for (const key of Object.keys(value)) {
+    if (!CONFIG_KEYS2.has(key)) {
+      return invalidProfile(path, `unrecognized override key ${JSON.stringify(key)}`);
+    }
+  }
+  try {
+    validateConfig(value, path);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return invalidProfile(path, detail);
+  }
+  return value;
+};
+var validateProfile = (value, path) => {
+  if (!isRecord(value)) {
+    return invalidProfile(path, "expected an object with overrides");
+  }
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "overrides") {
+    return invalidProfile(path, "expected only an overrides object");
+  }
+  return { overrides: validateOverrides(value.overrides, path) };
+};
+var projectProfileKeyAt = (profiles, directory) => {
+  if (profiles === undefined) {
+    return;
+  }
+  if (!isRecord(profiles)) {
+    throw new TypeError("Invalid projectProfiles: expected a JSON object.");
+  }
+  const path = canonicalProjectDirectory(directory);
+  const keys = Object.keys(profiles).filter((key) => isAbsolute(key) && canonicalProjectDirectory(key) === path);
+  if (keys.length > 1) {
+    throw new TypeError(`Invalid project profile at ${path}: duplicate canonical directory.`);
+  }
+  return keys[0];
+};
+var projectProfileAt = (profiles, directory) => {
+  const key = projectProfileKeyAt(profiles, directory);
+  if (!key || !isRecord(profiles)) {
+    return;
+  }
+  return validateProfile(profiles[key], canonicalProjectDirectory(directory));
+};
+var selectProjectProfile = (profiles, cwd) => {
+  if (profiles === undefined) {
+    return;
+  }
+  if (!isRecord(profiles)) {
+    throw new TypeError("Invalid projectProfiles: expected a JSON object.");
+  }
+  const directory = canonicalProjectDirectory(cwd);
+  const candidates = Object.entries(profiles).filter(([path]) => isAbsolute(path)).map(([path, value]) => ({
+    path: canonicalProjectDirectory(path),
+    value
+  })).filter(({ path }) => isAncestorPath(path, directory)).toSorted((left, right) => right.path.length - left.path.length);
+  const [selected, next] = candidates;
+  if (!selected) {
+    return;
+  }
+  if (next?.path === selected.path) {
+    throw new TypeError(`Invalid project profile at ${selected.path}: duplicate canonical directory.`);
+  }
+  return {
+    path: selected.path,
+    profile: validateProfile(selected.value, selected.path)
+  };
+};
+var validateProjectOverrides = (overrides) => validateOverrides({ ...overrides }, "project profile overrides");
+var projectProfileEntry = (overrides) => ({
+  overrides: { ...overrides }
+});
 
 // src/config/storage.ts
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -977,78 +1087,28 @@ var applyProjectConfig = (config) => {
   }
 };
 
-// src/config/project-profiles.ts
-import { realpathSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
-var PROJECT_PROFILES_KEY = "projectProfiles";
-var CONFIG_KEYS2 = new Set(configKeys);
-var canonicalProjectDirectory = (path) => {
-  const absolute = resolve(path);
-  try {
-    return realpathSync.native(absolute);
-  } catch {
-    return absolute;
-  }
-};
-var isAncestorPath = (ancestor, descendant) => ancestor === descendant || descendant.startsWith(`${ancestor}${sep}`);
-var invalidProfile = (path, detail) => {
-  throw new TypeError(`Invalid project profile at ${path}: ${detail}.`);
-};
-var validateOverrides = (value, path) => {
-  if (!isRecord(value)) {
-    return invalidProfile(path, "overrides must be a JSON object");
-  }
-  for (const key of Object.keys(value)) {
-    if (!CONFIG_KEYS2.has(key)) {
-      return invalidProfile(path, `unrecognized override key ${JSON.stringify(key)}`);
-    }
-  }
-  try {
-    validateConfig(value, path);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return invalidProfile(path, detail);
-  }
-  return value;
-};
-var validateProfile = (value, path) => {
-  if (!isRecord(value)) {
-    return invalidProfile(path, "expected an object with overrides");
-  }
-  const keys = Object.keys(value);
-  if (keys.length !== 1 || keys[0] !== "overrides") {
-    return invalidProfile(path, "expected only an overrides object");
-  }
-  return { overrides: validateOverrides(value.overrides, path) };
-};
-var selectProjectProfile = (profiles, cwd) => {
-  if (profiles === undefined) {
-    return;
-  }
-  if (!isRecord(profiles)) {
-    throw new TypeError("Invalid projectProfiles: expected a JSON object.");
-  }
-  const directory = canonicalProjectDirectory(cwd);
-  const candidates = Object.entries(profiles).filter(([path]) => isAbsolute(path)).map(([path, value]) => ({
-    path: canonicalProjectDirectory(path),
-    value
-  })).filter(({ path }) => isAncestorPath(path, directory)).toSorted((left, right) => right.path.length - left.path.length);
-  const [selected, next] = candidates;
-  if (!selected) {
-    return;
-  }
-  if (next?.path === selected.path) {
-    throw new TypeError(`Invalid project profile at ${selected.path}: duplicate canonical directory.`);
-  }
-  return {
-    path: selected.path,
-    profile: validateProfile(selected.value, selected.path)
-  };
-};
-
 // src/config/storage.ts
+var configPaths = (_ctx) => [
+  join(getAgentDir(), "advisor.json")
+];
+var effectiveModelSourceDescription = (source) => {
+  if (source.kind === "project") {
+    return `Source: selected project profile at ${source.path}.`;
+  }
+  if (source.kind === "global") {
+    return "Source: global advisor.json.";
+  }
+  return "Source: built-in default.";
+};
+var effectiveConfigSnapshot = {
+  advisor: "",
+  advisorSource: { kind: "default" },
+  configPath: null,
+  executor: "",
+  executorSource: { kind: "default" }
+};
+var getEffectiveConfigSnapshot = () => effectiveConfigSnapshot;
 var currentConfigState = () => Object.fromEntries(SAVED_CONFIG_KEYS.map((key) => [key, CONFIG_SCHEMA[key].current()]));
-var sameConfigValue = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 var RESERVED_ADVISOR_JSON_KEYS = new Set([
   "typesafe_api_key",
   PROJECT_PROFILES_KEY
@@ -1060,27 +1120,6 @@ var readExistingConfig = (path) => {
   } catch {
     return {};
   }
-};
-var shouldPersistConfigKey = (key, persistAdvisor, persistExecutor) => (key !== "advisor" || persistAdvisor) && (key !== "executor" || persistExecutor);
-var applyChangedConfigValues = (existing, current, changedKeys, persistAdvisor, persistExecutor) => {
-  const dropped = new Set;
-  const data = { ...existing };
-  for (const key of changedKeys) {
-    if (!shouldPersistConfigKey(key, persistAdvisor, persistExecutor)) {
-      continue;
-    }
-    const value = current[key];
-    const isEmptyModelRef = (key === "advisor" || key === "executor") && !value;
-    if (value === undefined || isEmptyModelRef) {
-      dropped.add(key);
-    } else {
-      data[key] = value;
-    }
-  }
-  if (dropped.size === 0) {
-    return data;
-  }
-  return Object.fromEntries(Object.entries(data).filter(([key]) => !dropped.has(key)));
 };
 var loadedConfigState;
 var loadedConfigPath;
@@ -1113,6 +1152,11 @@ var readConfigCached = (path) => {
   configCache.set(path, { config, identity });
   return config;
 };
+var readGlobalConfig = (_ctx) => {
+  const path = join(getAgentDir(), "advisor.json");
+  const empty = {};
+  return existsSync(path) ? readConfigCached(path) : empty;
+};
 var loadGlobalConfig = (ctx, path) => {
   const config = existsSync(path) ? readConfigCached(path) : undefined;
   if (!config) {
@@ -1126,8 +1170,24 @@ var loadGlobalConfig = (ctx, path) => {
   }
   return config;
 };
+var modelSource = (globalConfig, selected, key) => {
+  if (selected && key in selected.profile.overrides) {
+    return { kind: "project", path: selected.path };
+  }
+  if (globalConfig && key in globalConfig) {
+    return { kind: "global" };
+  }
+  return { kind: "default" };
+};
 var loadConfig = (ctx) => {
   resetDefaults();
+  effectiveConfigSnapshot = {
+    advisor: "",
+    advisorSource: { kind: "default" },
+    configPath: null,
+    executor: "",
+    executorSource: { kind: "default" }
+  };
   const path = join(getAgentDir(), "advisor.json");
   const globalConfig = loadGlobalConfig(ctx, path);
   const selected = selectProjectProfile(globalConfig?.[PROJECT_PROFILES_KEY], ctx.cwd);
@@ -1140,45 +1200,119 @@ var loadConfig = (ctx) => {
   if (selected) {
     applyProjectConfig(selected.profile.overrides);
   }
+  if (globalConfig?.alwaysOn !== true) {
+    setAlwaysOnRef(false);
+  }
   setPersistedModelRefs(configuredModelRef(selected?.profile.overrides.advisor ?? globalConfig?.advisor), configuredModelRef(selected?.profile.overrides.executor ?? globalConfig?.executor));
   setAdvisorOutcomeLoggingRef(selected?.profile.overrides.advisorOutcomeLogging ?? globalConfig?.advisorOutcomeLogging === true);
   loadedConfigState = currentConfigState();
   loadedConfigPath = path;
-  return existsSync(path) ? path : null;
+  effectiveConfigSnapshot = {
+    advisor: advisorRef,
+    advisorEffort: advisorEffortRef,
+    advisorSource: modelSource(globalConfig, selected, "advisor"),
+    configPath: existsSync(path) ? path : null,
+    executor: executorRef,
+    executorEffort: executorEffortRef,
+    executorSource: modelSource(globalConfig, selected, "executor"),
+    profilePath: selected?.path
+  };
+  return effectiveConfigSnapshot.configPath;
 };
-var saveConfig = (_ctx, options = {}) => {
-  const path = join(getAgentDir(), "advisor.json");
-  const persistAdvisor = options.persistAdvisor ?? true;
-  const persistExecutor = options.persistExecutor ?? true;
-  const existing = readExistingConfig(path);
-  const current = currentConfigState();
-  const baseline = loadedConfigPath === path ? loadedConfigState : undefined;
-  const changedKeys = baseline ? SAVED_CONFIG_KEYS.filter((key) => !sameConfigValue(current[key], baseline[key])) : [...SAVED_CONFIG_KEYS];
-  if (changedKeys.length === 0) {
-    return path;
+var requireProjectTrust = (ctx) => {
+  if (!ctx.isProjectTrusted()) {
+    throw new Error("Project profiles require Pi Project Trust.");
   }
-  const data = applyChangedConfigValues(existing, current, changedKeys, persistAdvisor, persistExecutor);
+};
+var freshProjectConfig = (ctx) => {
+  const path = join(getAgentDir(), "advisor.json");
+  const existing = readExistingConfig(path);
+  const profiles = existing[PROJECT_PROFILES_KEY];
+  const target = canonicalProjectDirectory(ctx.cwd);
+  return { existing, path, profiles, target };
+};
+var writeConfig = (path, data) => {
   writeFileSync(path, `${JSON.stringify(data, null, 2)}
 `);
   resetConfigCache();
-  const nextLoadedState = { ...current };
-  if (!persistAdvisor) {
-    nextLoadedState.advisor = baseline ? baseline.advisor : configuredModelRef(isString(existing.advisor) ? existing.advisor : undefined);
+};
+var applyExplicitValues = (existing, values) => Object.fromEntries(Object.entries({ ...existing, ...values }).filter(([, value]) => value !== undefined));
+var getProjectSettingsProfile = (ctx) => {
+  const { profiles, target } = freshProjectConfig(ctx);
+  const targetProfile = projectProfileAt(profiles, target);
+  const selected = selectProjectProfile(profiles, ctx.cwd);
+  return {
+    inheritedProfilePath: selected?.path === target ? undefined : selected?.path,
+    overrideKeys: Object.keys(targetProfile?.overrides ?? {}),
+    overrides: targetProfile?.overrides ?? {},
+    profileExists: Boolean(targetProfile),
+    target
+  };
+};
+var updateGlobalConfig = (_ctx, values) => {
+  const path = join(getAgentDir(), "advisor.json");
+  validateConfig(values, path);
+  const existing = readExistingConfig(path);
+  const data = {};
+  for (const [key, value] of Object.entries(existing)) {
+    if (!(key in values)) {
+      data[key] = value;
+    }
   }
-  if (!persistExecutor) {
-    nextLoadedState.executor = baseline ? baseline.executor : configuredModelRef(isString(existing.executor) ? existing.executor : undefined);
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) {
+      data[key] = value;
+    }
   }
-  loadedConfigState = nextLoadedState;
-  loadedConfigPath = path;
+  writeConfig(path, data);
   return path;
 };
-var saveGlobalOutcomeLogging = (enabled) => {
+var updateGlobalConfigValues = (_ctx, values) => {
   const path = join(getAgentDir(), "advisor.json");
+  validateConfig(values, path);
   const existing = readExistingConfig(path);
-  writeFileSync(path, `${JSON.stringify({ ...existing, advisorOutcomeLogging: enabled }, null, 2)}
+  const data = applyExplicitValues(existing, values);
+  writeConfig(path, data);
+  return path;
+};
+var updateProjectConfigAt = (ctx, directory, update) => {
+  requireProjectTrust(ctx);
+  const {
+    existing,
+    path,
+    profiles: existingProfiles
+  } = freshProjectConfig(ctx);
+  const target = canonicalProjectDirectory(directory);
+  const profileKey = projectProfileKeyAt(existingProfiles, target);
+  const profiles = Object.fromEntries(Object.entries(isRecord(existingProfiles) ? existingProfiles : {}).filter(([key]) => key !== profileKey || profileKey === target));
+  const overrides = projectProfileAt(existingProfiles, target)?.overrides ?? {};
+  profiles[target] = projectProfileEntry(validateProjectOverrides(update({ ...overrides })));
+  writeConfig(path, { ...existing, [PROJECT_PROFILES_KEY]: profiles });
+  return path;
+};
+var updateProjectConfig = (ctx, update) => updateProjectConfigAt(ctx, ctx.cwd, update);
+var updateProjectConfigValues = (ctx, directory, values) => updateProjectConfigAt(ctx, directory, (overrides) => applyExplicitValues(overrides, values));
+var getEffectiveProjectProfile = (ctx) => {
+  const { profiles } = freshProjectConfig(ctx);
+  return selectProjectProfile(profiles, ctx.cwd);
+};
+var removeProjectConfig = (ctx) => {
+  requireProjectTrust(ctx);
+  const {
+    existing,
+    path,
+    profiles: existingProfiles,
+    target
+  } = freshProjectConfig(ctx);
+  const profileKey = projectProfileKeyAt(existingProfiles, target);
+  if (!isRecord(existingProfiles) || !profileKey) {
+    return false;
+  }
+  const profiles = Object.fromEntries(Object.entries(existingProfiles).filter(([key]) => key !== profileKey));
+  writeFileSync(path, `${JSON.stringify({ ...existing, [PROJECT_PROFILES_KEY]: profiles }, null, 2)}
 `);
   resetConfigCache();
-  return path;
+  return true;
 };
 
 // src/tools/model-access.ts
@@ -1325,6 +1459,25 @@ var getExplicitModelError = (ctx, ref, label, overridden, availableRefs) => {
     }
   }
 };
+var validateAdvisorModels = async (ctx, advisorRef2, executorRef2) => {
+  for (const [label, ref] of [
+    ["Executor", executorRef2],
+    ["Advisor", advisorRef2]
+  ]) {
+    const model = findConfiguredModel(ctx, ref);
+    if (!model) {
+      return `${label} model not found: ${ref}`;
+    }
+    const available = getAvailableModelRefs(ctx);
+    if (available && !available.includes(ref)) {
+      return `${label} model unavailable: ${ref}`;
+    }
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!(auth.ok && auth.apiKey)) {
+      return `No API key for ${label} ${ref}`;
+    }
+  }
+};
 var planActivationModels = (ctx, executor, advisor, pendingExecutorRef, persisted, executorOverride, advisorOverride, availableRefs) => {
   const pendingExecutor = !executorOverride && pendingExecutorRef && isSelectableModel(ctx, pendingExecutorRef, availableRefs) ? pendingExecutorRef : undefined;
   const executorConfigured = executorOverride || Boolean(pendingExecutor) || Boolean(persisted.executor && isSelectableModel(ctx, executor, availableRefs));
@@ -1336,263 +1489,22 @@ var planActivationModels = (ctx, executor, advisor, pendingExecutorRef, persiste
   };
 };
 
-// src/ui/model-selector-adapter.ts
-class ModelSelectorAdapter {
-  list;
-  constructor(list) {
-    this.list = list;
+// src/commands/model-pending.ts
+var modelContextIdentity = (ctx) => {
+  const directory = canonicalProjectDirectory(ctx.cwd);
+  const profile = getEffectiveProjectProfile(ctx);
+  return `${directory}:${profile?.path ?? "global"}`;
+};
+var pendingExecutorModelRef = (runtime, ctx) => {
+  if (runtime.pendingExecutorModelContext !== undefined && runtime.pendingExecutorModelContext !== modelContextIdentity(ctx)) {
+    runtime.pendingExecutorModelRef = undefined;
+    runtime.pendingExecutorModelContext = undefined;
   }
-  get focused() {
-    return this.list.focused;
-  }
-  set focused(value) {
-    this.list.focused = value;
-  }
-  invalidate() {
-    this.list.invalidate();
-  }
-  render(width) {
-    return this.list.render(width);
-  }
-  handleInput(keyData) {
-    this.list.handleInput(keyData);
-  }
-}
-
-// src/ui/searchable-model-list.ts
-import { fuzzyFilter, Input, truncateToWidth } from "@earendil-works/pi-tui";
-
-class SearchableModelList {
-  tui;
-  searchInput;
-  allOptions;
-  currentOption;
-  multiSelect;
-  selected = new Set;
-  filteredOptions;
-  selectedIndex = 0;
-  title;
-  onSelect;
-  onCancel;
-  theme;
-  keybindings;
-  _focused = false;
-  get focused() {
-    return this._focused;
-  }
-  set focused(val) {
-    this._focused = val;
-    this.searchInput.focused = val;
-  }
-  constructor(options) {
-    this.multiSelect = options.multiSelect;
-    this.tui = options.tui;
-    this.title = options.title;
-    const [requestedCurrentOption] = options.currentOptions;
-    this.currentOption = !this.multiSelect && requestedCurrentOption && options.allOptions.includes(requestedCurrentOption) ? requestedCurrentOption : undefined;
-    let allOptions;
-    if (this.multiSelect) {
-      allOptions = [...new Set(options.allOptions)].toSorted((left, right) => left.localeCompare(right));
-    } else if (this.currentOption) {
-      allOptions = [
-        this.currentOption,
-        ...options.allOptions.filter((item) => item !== this.currentOption)
-      ];
-    } else {
-      allOptions = [...options.allOptions];
-    }
-    this.allOptions = allOptions;
-    if (this.multiSelect) {
-      for (const value of options.currentOptions) {
-        if (this.allOptions.includes(value)) {
-          this.selected.add(value);
-        }
-      }
-    }
-    this.theme = options.theme;
-    this.keybindings = options.keybindings;
-    this.onSelect = options.onSelect;
-    this.onCancel = options.onCancel;
-    this.searchInput = new Input;
-    this.filteredOptions = this.allOptions;
-  }
-  invalidate() {
-    this.searchInput.invalidate();
-  }
-  render(width) {
-    const lines = [this.theme.fg("border", "─".repeat(width))];
-    lines.push(`  ${this.theme.fg("accent", this.theme.bold(this.title))}`);
-    const inputLines = this.searchInput.render(Math.max(1, width - 10));
-    lines.push(`  ${this.theme.fg("accent", "Search: ")}${inputLines[0] || ""}`, "");
-    const query = this.searchInput.getValue().trim();
-    this.filteredOptions = query ? fuzzyFilter(this.allOptions, query, (item) => item) : this.allOptions;
-    this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredOptions.length - 1));
-    const maxVisible = 10;
-    const total = this.filteredOptions.length;
-    if (total === 0) {
-      lines.push(`  ${this.theme.fg("muted", "No matching models found.")}`);
-    } else {
-      const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), total - maxVisible));
-      const endIndex = Math.min(startIndex + maxVisible, total);
-      for (let i = startIndex;i < endIndex; i += 1) {
-        lines.push(this.renderOption(this.filteredOptions[i], i));
-      }
-      if (total > maxVisible) {
-        lines.push(`  ${this.theme.fg("muted", `  (${this.selectedIndex + 1}/${total})`)}`);
-      }
-    }
-    lines.push("", `  ${this.theme.fg("dim", this.interactionHint())}`, this.theme.fg("border", "─".repeat(width)));
-    return lines.map((line) => truncateToWidth(line, width));
-  }
-  handleInput(keyData) {
-    if (this.matchesAction(keyData, "tui.select.up", "\x1B[A")) {
-      this.moveSelection(-1);
-      return;
-    }
-    if (this.matchesAction(keyData, "tui.select.down", "\x1B[B")) {
-      this.moveSelection(1);
-      return;
-    }
-    if (this.multiSelect && keyData === " ") {
-      const item = this.filteredOptions[this.selectedIndex];
-      if (item) {
-        if (this.selected.has(item)) {
-          this.selected.delete(item);
-        } else {
-          this.selected.add(item);
-        }
-      }
-      this.tui.requestRender();
-      return;
-    }
-    if (this.matchesAction(keyData, "tui.select.confirm", `
-`) || keyData === "\r") {
-      if (this.multiSelect) {
-        this.onSelect(this.allOptions.filter((item) => this.selected.has(item)));
-      } else {
-        const selectedOption = this.filteredOptions[this.selectedIndex];
-        if (selectedOption !== undefined) {
-          this.onSelect([selectedOption]);
-        }
-      }
-      return;
-    }
-    if (this.matchesAction(keyData, "tui.select.cancel", "\x1B")) {
-      this.onCancel();
-      return;
-    }
-    this.searchInput.handleInput(keyData);
-    this.selectedIndex = 0;
-    this.tui.requestRender();
-  }
-  interactionHint() {
-    return this.multiSelect ? "Type to search · ↑↓: navigate · Space: toggle · Enter: apply · Esc: cancel" : "Type to search · ↑↓: navigate · Enter: select · Esc: cancel";
-  }
-  renderOption(item, index) {
-    let tick = "  ";
-    if (this.multiSelect ? this.selected.has(item) : item === this.currentOption) {
-      tick = "✓ ";
-    }
-    if (index === this.selectedIndex) {
-      return `  ${this.theme.fg("accent", `→ ${tick}${item}`)}`;
-    }
-    return `    ${this.theme.fg("text", `${tick}${item}`)}`;
-  }
-  matchesAction(keyData, action, fallback) {
-    return this.keybindings.matches(keyData, action) || keyData === fallback;
-  }
-  moveSelection(direction) {
-    if (this.filteredOptions.length > 0) {
-      const lastIndex = this.filteredOptions.length - 1;
-      const nextIndex = this.selectedIndex + direction;
-      if (nextIndex < 0) {
-        this.selectedIndex = lastIndex;
-      } else if (nextIndex > lastIndex) {
-        this.selectedIndex = 0;
-      } else {
-        this.selectedIndex = nextIndex;
-      }
-    }
-    this.tui.requestRender();
-  }
-}
-
-// src/ui/model-selector.ts
-class SearchableModelSelector extends ModelSelectorAdapter {
-  constructor(options) {
-    super(new SearchableModelList({
-      ...options,
-      currentOptions: options.currentOption ? [options.currentOption] : [],
-      multiSelect: false,
-      onSelect: ([value]) => {
-        if (value !== undefined) {
-          options.onSelect(value);
-        }
-      }
-    }));
-  }
-}
-
-// src/commands/model-picker.ts
-var selectAdvisorModels = async (ctx, options) => {
-  if (!ctx.hasUI) {
-    return;
-  }
-  const refs = getAvailableModelRefs(ctx);
-  if (refs && refs.length === 0) {
-    ctx.ui.notify("No selectable models are available. Configure a provider with /login or models.json, then retry.", "error");
-    return;
-  }
-  const allOptions = [
-    ...new Set(refs ?? [options.executor, options.advisor].filter((ref) => Boolean(ref)))
-  ];
-  let { advisor, advisorEffort, executor, executorEffort } = options;
-  if (options.selectExecutor) {
-    const selectedExecutor = await ctx.ui.custom((tui, theme, keybindings, done) => new SearchableModelSelector({
-      allOptions,
-      currentOption: executor || undefined,
-      keybindings,
-      onCancel: () => done(undefined),
-      onSelect: done,
-      theme,
-      title: "Select Executor Model",
-      tui
-    }));
-    if (!selectedExecutor) {
-      return;
-    }
-    const selectedExecutorEffort = await ctx.ui.select("Select Executor Reasoning/Thinking Level", effortChoices(executorEffort));
-    if (!selectedExecutorEffort) {
-      return;
-    }
-    executor = selectedExecutor;
-    executorEffort = selectedEffort(selectedExecutorEffort);
-  }
-  if (options.selectAdvisor) {
-    const selectedAdvisor = await ctx.ui.custom((tui, theme, keybindings, done) => new SearchableModelSelector({
-      allOptions,
-      currentOption: advisor || undefined,
-      keybindings,
-      onCancel: () => done(undefined),
-      onSelect: done,
-      theme,
-      title: "Select Advisor Model",
-      tui
-    }));
-    if (!selectedAdvisor) {
-      return;
-    }
-    const selectedAdvisorEffort = await ctx.ui.select("Select Advisor Reasoning/Thinking Level", effortChoices(advisorEffort));
-    if (!selectedAdvisorEffort) {
-      return;
-    }
-    advisor = selectedAdvisor;
-    advisorEffort = selectedEffort(selectedAdvisorEffort);
-  }
-  if (!(advisor && executor)) {
-    return;
-  }
-  return { advisor, advisorEffort, executor, executorEffort };
+  return runtime.pendingExecutorModelRef;
+};
+var setPendingExecutorModelRef = (runtime, ctx, ref) => {
+  runtime.pendingExecutorModelRef = ref;
+  runtime.pendingExecutorModelContext = ref ? modelContextIdentity(ctx) : undefined;
 };
 
 // src/herdr-shared.ts
@@ -1862,22 +1774,31 @@ import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/model-stream.ts
 import { stream } from "@earendil-works/pi-ai/compat";
-var resolveConfiguredModel = async (ctx, ref, label) => {
+var resolveConfiguredModel = async (ctx, ref, label, provenance) => {
+  const withProvenance = (message) => provenance ? `${message}. ${provenance}` : message;
   if (!ref) {
-    throw new Error(`${label} model not configured`);
+    throw new Error(withProvenance(`${label} model not configured`));
   }
   const [provider, modelId] = splitRef(ref);
   const lookup = [provider, modelId];
   const model = ctx.modelRegistry.find(...lookup);
   if (!model) {
-    throw new Error(`${label} model not found: ${ref}`);
+    throw new Error(withProvenance(`${label} model not found: ${ref}`));
   }
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  let auth;
+  try {
+    auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  } catch (error) {
+    if (ctx.signal?.aborted) {
+      throw error;
+    }
+    throw new Error(withProvenance(`Could not verify authentication for ${label} ${ref}`), { cause: error });
+  }
   if (!auth.ok) {
-    throw new Error(auth.error);
+    throw new Error(provenance ? withProvenance(`Authentication unavailable for ${label} ${ref}`) : auth.error);
   }
   if (!auth.apiKey) {
-    throw new Error(`No API key for ${ref}`);
+    throw new Error(withProvenance(provenance ? `No API key for ${label} ${ref}` : `No API key for ${ref}`));
   }
   return {
     apiKey: auth.apiKey,
@@ -3289,19 +3210,19 @@ var formatTokenCount = (value) => {
 var formatTokens = formatTokenCount;
 var formatCost = (value) => `$${value.toFixed(4)}`;
 var formatUsageFields = (usage) => {
-  const tokens = [
+  const tokens2 = [
     usage.input === undefined ? undefined : `↑${formatTokens(usage.input)}`,
     usage.output === undefined ? undefined : `↓${formatTokens(usage.output)}`,
     usage.cacheRead === undefined ? undefined : `cr:${formatTokens(usage.cacheRead)}`,
     usage.cacheWrite === undefined ? undefined : `cw:${formatTokens(usage.cacheWrite)}`
   ].filter((value) => value !== undefined);
-  if (tokens.length === 0 && usage.totalTokens !== undefined) {
-    tokens.push(`tokens:${formatTokens(usage.totalTokens)}`);
+  if (tokens2.length === 0 && usage.totalTokens !== undefined) {
+    tokens2.push(`tokens:${formatTokens(usage.totalTokens)}`);
   }
   if (usage.cost !== undefined) {
-    tokens.push(formatCost(usage.cost));
+    tokens2.push(formatCost(usage.cost));
   }
-  return tokens.join(" · ") || undefined;
+  return tokens2.join(" · ") || undefined;
 };
 var formatAdvisorUsage = (usage) => {
   const snapshot = snapshotAdvisorUsage(usage);
@@ -3476,7 +3397,13 @@ var streamScoutResponse = async (dependencies, resolved, executorModel, executor
     teardown();
   }
 };
-var runAdvisorScout = async (ctx, manifest, parentSignal, onEvent, timeoutMs = advisorScoutTimeoutMsRef, dependencies = defaultDependencies) => {
+var runAdvisorScout = async (ctx, manifest, parentSignal, onEvent, timeoutMs, dependencies = defaultDependencies, configuration) => {
+  const effectiveConfiguration = configuration ?? getEffectiveConfigSnapshot();
+  const markedSubagent = isMarkedSubagent();
+  const scoutTimeoutMs = timeoutMs ?? advisorScoutTimeoutMsRef;
+  const executorModel = configuration && !markedSubagent ? configuration.executor : effectiveExecutorRef(ctx);
+  const executorEffort = configuration && !markedSubagent ? configuration.executorEffort : effectiveExecutorEffort(ctx);
+  const executorProvenance = markedSubagent ? "Source: host-selected subagent model." : effectiveModelSourceDescription(effectiveConfiguration.executorSource);
   const startedAt = Date.now();
   const publish = (event) => {
     onEvent?.(event);
@@ -3490,7 +3417,7 @@ var runAdvisorScout = async (ctx, manifest, parentSignal, onEvent, timeoutMs = a
       category,
       message,
       metrics: usage === undefined ? baseMetrics(manifest, startedAt) : { ...baseMetrics(manifest, startedAt), usage },
-      model: effectiveExecutorRef(ctx),
+      model: executorModel,
       ok: false
     };
     publish({ outcome: outcome2, type: "fallback" });
@@ -3499,11 +3426,9 @@ var runAdvisorScout = async (ctx, manifest, parentSignal, onEvent, timeoutMs = a
   if (parentSignal?.aborted) {
     return cancelled();
   }
-  const executorModel = effectiveExecutorRef(ctx);
-  const executorEffort = effectiveExecutorEffort(ctx);
   let resolved;
   try {
-    resolved = await dependencies.resolve(ctx, executorModel, "Scout");
+    resolved = await dependencies.resolve(ctx, executorModel, "Scout", executorProvenance);
   } catch (error) {
     if (parentSignal?.aborted) {
       return cancelled();
@@ -3515,7 +3440,7 @@ var runAdvisorScout = async (ctx, manifest, parentSignal, onEvent, timeoutMs = a
     return cancelled();
   }
   publish({ model: executorModel, type: "call" });
-  const streamed = await streamScoutResponse(dependencies, resolved, executorModel, executorEffort, manifest, parentSignal, timeoutMs, publish);
+  const streamed = await streamScoutResponse(dependencies, resolved, executorModel, executorEffort, manifest, parentSignal, scoutTimeoutMs, publish);
   if (!streamed.ok) {
     if (parentSignal?.aborted) {
       return cancelled();
@@ -3552,7 +3477,7 @@ var runAdvisorScout = async (ctx, manifest, parentSignal, onEvent, timeoutMs = a
 };
 
 // src/scout-curation.ts
-var curateAdvisorConversation = async (ctx, legacyConversation, signal, onScout, enabled = advisorScoutEnabledRef, runScout = runAdvisorScout, currentInvocationId, maxChars, imageNonce = "") => {
+var curateAdvisorConversation = async (ctx, legacyConversation, signal, onScout, enabled = advisorScoutEnabledRef, runScout = runAdvisorScout, currentInvocationId, maxChars, imageNonce = "", configuration) => {
   if (!enabled) {
     return { conversation: legacyConversation };
   }
@@ -3582,7 +3507,7 @@ var curateAdvisorConversation = async (ctx, legacyConversation, signal, onScout,
     onScout?.({ outcome: scout, type: "fallback" });
     return { conversation: legacyConversation, scout };
   }
-  const outcome = await runScout(ctx, built.manifest, signal, onScout);
+  const outcome = await runScout(ctx, built.manifest, signal, onScout, undefined, undefined, configuration);
   if (!outcome.ok && outcome.cancelled) {
     throw signal?.reason instanceof Error ? signal.reason : new Error("Advisor operation cancelled during Scout.");
   }
@@ -3712,7 +3637,7 @@ var assembleConsultationContext = async (options) => {
   const conversationBudget = Math.max(0, contextMaxCharsRef - changeText.length);
   const imageNonce = randomUUID();
   const legacyConversation = advisorRequestConversation(ctx, conversationBudget, true, imageNonce);
-  const curated = await curateAdvisorConversation(ctx, legacyConversation, options.signal, options.onScout, advisorScoutEnabledRef, runAdvisorScout, options.currentInvocationId, conversationBudget, imageNonce);
+  const curated = await curateAdvisorConversation(ctx, legacyConversation, options.signal, options.onScout, advisorScoutEnabledRef, runAdvisorScout, options.currentInvocationId, conversationBudget, imageNonce, options.configuration);
   const preferences = await readProjectPreferences(ctx, ATTACHMENT_TEXT_MAX_BYTES, advisorRedactSecretsRef);
   const draftText = options.draft ? redactAndCapText(options.draft, ATTACHMENT_TEXT_MAX_BYTES, advisorRedactSecretsRef) : undefined;
   const untracked2 = await readUntrackedFiles(ctx.cwd, options.includeUntracked ?? [], advisorUntrackedContentRef, advisorRedactSecretsRef);
@@ -3861,6 +3786,7 @@ ${item.text}
 var collectAdvisorResponse = async (options) => {
   const { ctx, question, signal, systemPrompt } = options;
   loadConfig(ctx);
+  const configuration = getEffectiveConfigSnapshot();
   if (sameModelAdvisorDisabled(ctx)) {
     throw new Error(sameModelAdvisorNotice);
   }
@@ -3868,9 +3794,10 @@ var collectAdvisorResponse = async (options) => {
   if (accessReason) {
     throw new Error(accessReason);
   }
-  const resolved = await resolveConfiguredModel(ctx, advisorRef, "Advisor");
+  const resolved = await resolveConfiguredModel(ctx, configuration.advisor, "Advisor", effectiveModelSourceDescription(configuration.advisorSource));
   const context = await assembleConsultationContext({
     ...options,
+    configuration,
     supportsImages: resolved.model.input.includes("image")
   });
   const outboundQuestion = advisorRedactSecretsRef && question !== undefined ? redactSecrets(question) : question;
@@ -3901,7 +3828,7 @@ ${escapeRepositoryText(label)}: attached image pixels (untrusted data).`,
   const streamed = await collectTextStream(resolved, {
     messages,
     onChunk: options.onChunk,
-    reasoning: advisorEffortRef,
+    reasoning: configuration.advisorEffort,
     signal,
     systemPrompt
   });
@@ -3916,7 +3843,7 @@ ${escapeRepositoryText(label)}: attached image pixels (untrusted data).`,
     imageOmissions: context.imageOmissions || undefined,
     imagePartsSeen: context.imagePartsSeen || undefined,
     markdown,
-    model: advisorRef,
+    model: configuration.advisor,
     preferenceBytes: context.preferences?.bytes,
     thinkingText: streamed.thinking,
     trackedBytes: context.tracked.reduce((sum, item) => sum + item.bytes, 0) || undefined,
@@ -3988,7 +3915,7 @@ import {
   Box,
   Markdown,
   Text,
-  truncateToWidth as truncateToWidth2,
+  truncateToWidth,
   visibleWidth
 } from "@earendil-works/pi-tui";
 
@@ -4063,7 +3990,7 @@ class ThinkingMarkdown {
     const renderWidth = Math.max(1, Math.floor(width));
     const contentWidth = Math.max(1, renderWidth - THINKING_PREFIX_WIDTH);
     const lines = this.markdown.render(contentWidth);
-    return lines.map((line, index) => truncateToWidth2(index === 0 ? `${this.prefix}${line}` : line, renderWidth, ""));
+    return lines.map((line, index) => truncateToWidth(index === 0 ? `${this.prefix}${line}` : line, renderWidth, ""));
   }
   invalidate() {
     this.markdown.invalidate();
@@ -4764,6 +4691,7 @@ class CommandRuntime {
   scoutStatus;
   manualProgressSequence = 0;
   pendingExecutorModelRef;
+  pendingExecutorModelContext;
   suppressModelSelectionSync = false;
   lastSameModelDisabled;
   constructor(pi, dependencies = {}) {
@@ -4822,7 +4750,7 @@ var loadCommandConfig = (ctx) => {
     return false;
   }
 };
-var prepareActivationModels = async (runtime, ctx, announce, executorOverride, advisorOverride) => {
+var prepareActivationModels = (runtime, ctx, announce, executorOverride, advisorOverride) => {
   const persisted = getPersistedModelRefs();
   const availableRefs = getAvailableModelRefs(ctx);
   const availableRefSet = availableRefs ? new Set(availableRefs) : undefined;
@@ -4831,35 +4759,304 @@ var prepareActivationModels = async (runtime, ctx, announce, executorOverride, a
     notify(ctx, explicitError, "error");
     return;
   }
-  const plan = planActivationModels(ctx, executorRef, advisorRef, runtime.pendingExecutorModelRef, persisted, executorOverride, advisorOverride, availableRefSet);
+  const plan = planActivationModels(ctx, executorRef, advisorRef, pendingExecutorModelRef(runtime, ctx), persisted, executorOverride, advisorOverride, availableRefSet);
   setExecutorRef(plan.pendingExecutor ?? executorRef);
-  if (!(plan.selectExecutor || plan.selectAdvisor)) {
-    return { pendingExecutor: plan.pendingExecutor, pickedModels: false };
-  }
-  if (!announce) {
+  if ((plan.selectExecutor || plan.selectAdvisor) && !announce) {
     notify(ctx, "Advisor models are not configured or available. Run /advisor to choose them.", "error");
     return;
   }
-  const selection = await selectAdvisorModels(ctx, {
-    advisor: advisorOverride || persisted.advisor ? advisorRef : "",
-    advisorEffort: advisorEffortRef,
-    executor: executorOverride || plan.pendingExecutor || persisted.executor ? executorRef : "",
-    executorEffort: executorEffortRef,
+  return {
+    pendingExecutor: plan.pendingExecutor,
     selectAdvisor: plan.selectAdvisor,
     selectExecutor: plan.selectExecutor
-  });
-  if (!selection) {
+  };
+};
+
+// src/ui/model-selector-adapter.ts
+class ModelSelectorAdapter {
+  list;
+  constructor(list) {
+    this.list = list;
+  }
+  get focused() {
+    return this.list.focused;
+  }
+  set focused(value) {
+    this.list.focused = value;
+  }
+  invalidate() {
+    this.list.invalidate();
+  }
+  render(width) {
+    return this.list.render(width);
+  }
+  handleInput(keyData) {
+    this.list.handleInput(keyData);
+  }
+}
+
+// src/ui/searchable-model-list.ts
+import { fuzzyFilter, Input, truncateToWidth as truncateToWidth2 } from "@earendil-works/pi-tui";
+
+class SearchableModelList {
+  tui;
+  searchInput;
+  allOptions;
+  currentOption;
+  multiSelect;
+  selected = new Set;
+  filteredOptions;
+  selectedIndex = 0;
+  title;
+  onSelect;
+  onCancel;
+  theme;
+  keybindings;
+  _focused = false;
+  get focused() {
+    return this._focused;
+  }
+  set focused(val) {
+    this._focused = val;
+    this.searchInput.focused = val;
+  }
+  constructor(options) {
+    this.multiSelect = options.multiSelect;
+    this.tui = options.tui;
+    this.title = options.title;
+    const [requestedCurrentOption] = options.currentOptions;
+    this.currentOption = !this.multiSelect && requestedCurrentOption && options.allOptions.includes(requestedCurrentOption) ? requestedCurrentOption : undefined;
+    let allOptions;
+    if (this.multiSelect) {
+      allOptions = [...new Set(options.allOptions)].toSorted((left, right) => left.localeCompare(right));
+    } else if (this.currentOption) {
+      allOptions = [
+        this.currentOption,
+        ...options.allOptions.filter((item) => item !== this.currentOption)
+      ];
+    } else {
+      allOptions = [...options.allOptions];
+    }
+    this.allOptions = allOptions;
+    if (this.multiSelect) {
+      for (const value of options.currentOptions) {
+        if (this.allOptions.includes(value)) {
+          this.selected.add(value);
+        }
+      }
+    }
+    this.theme = options.theme;
+    this.keybindings = options.keybindings;
+    this.onSelect = options.onSelect;
+    this.onCancel = options.onCancel;
+    this.searchInput = new Input;
+    this.filteredOptions = this.allOptions;
+  }
+  invalidate() {
+    this.searchInput.invalidate();
+  }
+  render(width) {
+    const lines = [this.theme.fg("border", "─".repeat(width))];
+    lines.push(`  ${this.theme.fg("accent", this.theme.bold(this.title))}`);
+    const inputLines = this.searchInput.render(Math.max(1, width - 10));
+    lines.push(`  ${this.theme.fg("accent", "Search: ")}${inputLines[0] || ""}`, "");
+    const query = this.searchInput.getValue().trim();
+    this.filteredOptions = query ? fuzzyFilter(this.allOptions, query, (item) => item) : this.allOptions;
+    this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredOptions.length - 1));
+    const maxVisible = 10;
+    const total = this.filteredOptions.length;
+    if (total === 0) {
+      lines.push(`  ${this.theme.fg("muted", "No matching models found.")}`);
+    } else {
+      const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), total - maxVisible));
+      const endIndex = Math.min(startIndex + maxVisible, total);
+      for (let i = startIndex;i < endIndex; i += 1) {
+        lines.push(this.renderOption(this.filteredOptions[i], i));
+      }
+      if (total > maxVisible) {
+        lines.push(`  ${this.theme.fg("muted", `  (${this.selectedIndex + 1}/${total})`)}`);
+      }
+    }
+    lines.push("", `  ${this.theme.fg("dim", this.interactionHint())}`, this.theme.fg("border", "─".repeat(width)));
+    return lines.map((line) => truncateToWidth2(line, width));
+  }
+  handleInput(keyData) {
+    if (this.matchesAction(keyData, "tui.select.up", "\x1B[A")) {
+      this.moveSelection(-1);
+      return;
+    }
+    if (this.matchesAction(keyData, "tui.select.down", "\x1B[B")) {
+      this.moveSelection(1);
+      return;
+    }
+    if (this.multiSelect && keyData === " ") {
+      const item = this.filteredOptions[this.selectedIndex];
+      if (item) {
+        if (this.selected.has(item)) {
+          this.selected.delete(item);
+        } else {
+          this.selected.add(item);
+        }
+      }
+      this.tui.requestRender();
+      return;
+    }
+    if (this.matchesAction(keyData, "tui.select.confirm", `
+`) || keyData === "\r") {
+      if (this.multiSelect) {
+        this.onSelect(this.allOptions.filter((item) => this.selected.has(item)));
+      } else {
+        const selectedOption = this.filteredOptions[this.selectedIndex];
+        if (selectedOption !== undefined) {
+          this.onSelect([selectedOption]);
+        }
+      }
+      return;
+    }
+    if (this.matchesAction(keyData, "tui.select.cancel", "\x1B")) {
+      this.onCancel();
+      return;
+    }
+    this.searchInput.handleInput(keyData);
+    this.selectedIndex = 0;
+    this.tui.requestRender();
+  }
+  interactionHint() {
+    return this.multiSelect ? "Type to search · ↑↓: navigate · Space: toggle · Enter: apply · Esc: cancel" : "Type to search · ↑↓: navigate · Enter: select · Esc: cancel";
+  }
+  renderOption(item, index) {
+    let tick = "  ";
+    if (this.multiSelect ? this.selected.has(item) : item === this.currentOption) {
+      tick = "✓ ";
+    }
+    if (index === this.selectedIndex) {
+      return `  ${this.theme.fg("accent", `→ ${tick}${item}`)}`;
+    }
+    return `    ${this.theme.fg("text", `${tick}${item}`)}`;
+  }
+  matchesAction(keyData, action, fallback) {
+    return this.keybindings.matches(keyData, action) || keyData === fallback;
+  }
+  moveSelection(direction) {
+    if (this.filteredOptions.length > 0) {
+      const lastIndex = this.filteredOptions.length - 1;
+      const nextIndex = this.selectedIndex + direction;
+      if (nextIndex < 0) {
+        this.selectedIndex = lastIndex;
+      } else if (nextIndex > lastIndex) {
+        this.selectedIndex = 0;
+      } else {
+        this.selectedIndex = nextIndex;
+      }
+    }
+    this.tui.requestRender();
+  }
+}
+
+// src/ui/model-selector.ts
+class SearchableModelSelector extends ModelSelectorAdapter {
+  constructor(options) {
+    super(new SearchableModelList({
+      ...options,
+      currentOptions: options.currentOption ? [options.currentOption] : [],
+      multiSelect: false,
+      onSelect: ([value]) => {
+        if (value !== undefined) {
+          options.onSelect(value);
+        }
+      }
+    }));
+  }
+}
+
+// src/commands/model-picker.ts
+var selectAdvisorModels = async (ctx, options) => {
+  if (!ctx.hasUI) {
     return;
   }
-  setAdvisorRef(selection.advisor);
-  setAdvisorEffortRef(selection.advisorEffort);
-  setExecutorRef(selection.executor);
-  setExecutorEffortRef(selection.executorEffort);
-  return { pendingExecutor: plan.pendingExecutor, pickedModels: true };
+  const refs = getAvailableModelRefs(ctx);
+  if (refs && refs.length === 0) {
+    ctx.ui.notify("No selectable models are available. Configure a provider with /login or models.json, then retry.", "error");
+    return;
+  }
+  const allOptions = [
+    ...new Set(refs ?? [options.executor, options.advisor].filter((ref) => Boolean(ref)))
+  ];
+  let { advisor, advisorEffort, executor, executorEffort } = options;
+  if (options.selectExecutor) {
+    const selectedExecutor = await ctx.ui.custom((tui, theme, keybindings, done) => new SearchableModelSelector({
+      allOptions,
+      currentOption: executor || undefined,
+      keybindings,
+      onCancel: () => done(undefined),
+      onSelect: done,
+      theme,
+      title: `Select Executor Model${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
+      tui
+    }));
+    if (!selectedExecutor) {
+      return;
+    }
+    const selectedExecutorEffort = await ctx.ui.select(`Select Executor Reasoning/Thinking Level${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`, effortChoices(executorEffort));
+    if (!selectedExecutorEffort) {
+      return;
+    }
+    executor = selectedExecutor;
+    executorEffort = selectedEffort(selectedExecutorEffort);
+  }
+  if (options.selectAdvisor) {
+    const selectedAdvisor = await ctx.ui.custom((tui, theme, keybindings, done) => new SearchableModelSelector({
+      allOptions,
+      currentOption: advisor || undefined,
+      keybindings,
+      onCancel: () => done(undefined),
+      onSelect: done,
+      theme,
+      title: `Select Advisor Model${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
+      tui
+    }));
+    if (!selectedAdvisor) {
+      return;
+    }
+    const selectedAdvisorEffort = await ctx.ui.select(`Select Advisor Reasoning/Thinking Level${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`, effortChoices(advisorEffort));
+    if (!selectedAdvisorEffort) {
+      return;
+    }
+    advisor = selectedAdvisor;
+    advisorEffort = selectedEffort(selectedAdvisorEffort);
+  }
+  if (!(advisor && executor)) {
+    return;
+  }
+  return { advisor, advisorEffort, executor, executorEffort };
+};
+
+// src/commands/settings-scope-selection.ts
+var selectSettingsScope = async (ctx) => {
+  const target = canonicalProjectDirectory(ctx.cwd);
+  const eligible = ctx.isProjectTrusted();
+  const destination = configPaths(ctx)[0] ?? "advisor.json";
+  const projectLine = eligible ? `For this project
+${target}
+Overrides global values for this directory and descendants.` : `For this project (unavailable)
+${target}
+Use /trust before creating or editing a project profile.`;
+  const choice = await ctx.ui.select(`Which Advisor configuration do you want to edit?
+
+Global
+Default for projects without an override.
+
+${projectLine}
+
+Project profiles are stored in your user configuration at ${destination}, not in repository.`, eligible ? ["Global", "For this project"] : ["Global"]);
+  if (choice === "Global") {
+    return { kind: "global" };
+  }
+  return choice === "For this project" ? { kind: "project", target } : undefined;
 };
 
 // src/commands/activation.ts
-var resolveActivationModels = async (runtime, ctx) => {
+var resolveActivationModels = async (ctx) => {
   const executor = findConfiguredModel(ctx, executorRef);
   if (!executor) {
     return {
@@ -4872,15 +5069,37 @@ var resolveActivationModels = async (runtime, ctx) => {
       error: advisorRef ? `Advisor model not found: ${advisorRef}` : "Advisor model not configured"
     };
   }
-  const advisorAuth = await ctx.modelRegistry.getApiKeyAndHeaders(advisor);
-  if (!(advisorAuth.ok && advisorAuth.apiKey)) {
-    return { error: `No API key for Advisor ${advisorRef}` };
+  for (const [label, model, ref] of [
+    ["Executor", executor, executorRef],
+    ["Advisor", advisor, advisorRef]
+  ]) {
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!(auth.ok && auth.apiKey)) {
+      return { error: `No API key for ${label} ${ref}` };
+    }
   }
-  if (!isMarkedSubagent() && !await runtime.setExecutorModel(executor)) {
-    return { error: `No API key for Executor ${executorRef}` };
-  }
-  return {};
+  return { executor };
 };
+var choosePersistenceScope = (ctx, requested) => {
+  if (requested === "global") {
+    return Promise.resolve({ kind: "global" });
+  }
+  if (requested === "project") {
+    if (!ctx.isProjectTrusted()) {
+      notify(ctx, "Project profiles require Pi Project Trust. Use /trust first.", "error");
+      return Promise.resolve(undefined);
+    }
+    return Promise.resolve({
+      kind: "project",
+      target: canonicalProjectDirectory(ctx.cwd)
+    });
+  }
+  if (!ctx.hasUI || !ctx.ui.select) {
+    return Promise.resolve({ kind: "global" });
+  }
+  return selectSettingsScope(ctx);
+};
+var scopeLabel = (scope) => scope.kind === "global" ? "Global" : `For this project: ${scope.target}`;
 var activateAdvisor = async (runtime, args, ctx, announce = true) => {
   if (!loadCommandConfig(ctx)) {
     return;
@@ -4899,8 +5118,14 @@ var activateAdvisor = async (runtime, args, ctx, announce = true) => {
     setExecutorRef(previous.executor);
     setExecutorEffortRef(previous.executorEffort);
   };
+  const requestedScope = parseAdvisorPersistenceScope(args);
+  if (requestedScope !== undefined && requestedScope !== "global" && requestedScope !== "project") {
+    notify(ctx, requestedScope, "error");
+    return;
+  }
   const executorOverride = hasExecutorOverride(args);
   const advisorOverride = hasAdvisorOverride(args);
+  const contextOverride = hasContextMaxCharsOverride(args);
   const argumentError = parseArgs(args);
   if (argumentError) {
     restoreRefs();
@@ -4912,16 +5137,86 @@ var activateAdvisor = async (runtime, args, ctx, announce = true) => {
     restoreRefs();
     return;
   }
-  const { error } = await resolveActivationModels(runtime, ctx);
+  const needsPersistence = executorOverride || advisorOverride || contextOverride || prepared.pendingExecutor !== undefined || prepared.selectAdvisor || prepared.selectExecutor;
+  const scope = needsPersistence ? await choosePersistenceScope(ctx, requestedScope) : undefined;
+  if (needsPersistence && !scope) {
+    restoreRefs();
+    return;
+  }
+  let pickedModels = false;
+  if (prepared.selectAdvisor || prepared.selectExecutor) {
+    const global = scope?.kind === "global" ? readGlobalConfig(ctx) : undefined;
+    const selection = await selectAdvisorModels(ctx, {
+      advisor: advisorOverride || scope?.kind !== "global" ? advisorRef : global?.advisor ?? "",
+      advisorEffort: scope?.kind === "global" ? global?.advisorEffort : advisorEffortRef,
+      executor: executorOverride || prepared.pendingExecutor || scope?.kind !== "global" ? executorRef : global?.executor ?? "",
+      executorEffort: scope?.kind === "global" ? global?.executorEffort : executorEffortRef,
+      scopeLabel: scope ? scopeLabel(scope) : undefined,
+      selectAdvisor: prepared.selectAdvisor,
+      selectExecutor: prepared.selectExecutor
+    });
+    if (!selection) {
+      restoreRefs();
+      return;
+    }
+    setAdvisorRef(selection.advisor);
+    setAdvisorEffortRef(selection.advisorEffort);
+    setExecutorRef(selection.executor);
+    setExecutorEffortRef(selection.executorEffort);
+    pickedModels = true;
+  }
+  const { error, executor } = await resolveActivationModels(ctx);
   if (error) {
     restoreRefs();
     notify(ctx, error, "error");
     return;
   }
-  if (args.trim() || prepared.pickedModels || prepared.pendingExecutor) {
-    saveConfig(ctx, { persistAdvisor: true, persistExecutor: true });
+  if (scope) {
+    const values = {};
+    if (pickedModels) {
+      values.advisor = advisorRef;
+      values.advisorEffort = advisorEffortRef;
+      values.executor = executorRef;
+      values.executorEffort = executorEffortRef;
+    }
+    if (advisorOverride) {
+      values.advisor = advisorRef;
+    }
+    if (executorOverride || prepared.pendingExecutor !== undefined) {
+      values.executor = executorRef;
+    }
+    if (contextOverride) {
+      values.contextMaxChars = contextMaxCharsRef;
+    }
+    try {
+      if (scope.kind === "global") {
+        updateGlobalConfigValues(ctx, values);
+      } else {
+        const projectValues = { ...values };
+        if (pickedModels) {
+          projectValues.advisorEffort = advisorEffortRef ?? "";
+          projectValues.executorEffort = executorEffortRef ?? "";
+        }
+        updateProjectConfigValues(ctx, scope.target, projectValues);
+      }
+      loadCommandConfig(ctx);
+    } catch (saveError) {
+      restoreRefs();
+      const message = saveError instanceof Error ? saveError.message : String(saveError);
+      notify(ctx, `Could not save Advisor configuration: ${message}`, "error");
+      return;
+    }
   }
-  runtime.pendingExecutorModelRef = undefined;
+  if (!executor) {
+    restoreRefs();
+    notify(ctx, "Executor model not configured", "error");
+    return;
+  }
+  if (!isMarkedSubagent() && !await runtime.setExecutorModel(executor)) {
+    notify(ctx, `No API key for Executor ${executorRef}`, "error");
+    return;
+  }
+  setPendingExecutorModelRef(runtime, ctx, undefined);
   if (executorEffortRef && !isMarkedSubagent()) {
     runtime.pi.setThinkingLevel(executorEffortRef);
   }
@@ -4946,7 +5241,7 @@ Advisor flow ${sameModelAdvisorDisabled(ctx, activeModel) ? "configured" : "read
 // src/commands/lifecycle.ts
 var registerCommandLifecycle = (runtime, activateAdvisor2) => {
   runtime.pi.on("session_start", async (_event, ctx) => {
-    runtime.pendingExecutorModelRef = undefined;
+    setPendingExecutorModelRef(runtime, ctx, undefined);
     runtime.resetSameModelNotice();
     try {
       loadConfig(ctx);
@@ -4968,20 +5263,33 @@ var registerCommandLifecycle = (runtime, activateAdvisor2) => {
       return;
     }
     const selected = `${event.model.provider}/${event.model.id}`;
-    if (!runtime.flowEnabled()) {
-      runtime.pendingExecutorModelRef = selected;
+    try {
+      loadConfig(ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notify(ctx, `Advisor model synchronization failed: ${message}`, "error");
       return;
     }
-    runtime.pendingExecutorModelRef = undefined;
+    if (!runtime.flowEnabled()) {
+      setPendingExecutorModelRef(runtime, ctx, selected);
+      return;
+    }
+    setPendingExecutorModelRef(runtime, ctx, undefined);
     if (selected === executorRef) {
       return;
     }
-    const persisted = getPersistedModelRefs();
-    setExecutorRef(selected);
-    saveConfig(ctx, {
-      persistAdvisor: Boolean(persisted.advisor),
-      persistExecutor: true
-    });
+    try {
+      const profile = getEffectiveProjectProfile(ctx);
+      if (profile) {
+        updateProjectConfigValues(ctx, profile.path, { executor: selected });
+      } else {
+        updateGlobalConfigValues(ctx, { executor: selected });
+      }
+      loadConfig(ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notify(ctx, `Advisor model synchronization failed: ${message}`, "error");
+    }
   });
   runtime.pi.on("session_shutdown", (_event, ctx) => {
     if (ctx.hasUI) {
@@ -6113,6 +6421,9 @@ var registerManualCommand = (runtime) => {
       } else {
         question = resolveAdvisorRequest(args);
       }
+      if (!loadCommandConfig(ctx)) {
+        return;
+      }
       if (sameModelAdvisorDisabled(ctx)) {
         notify(ctx, sameModelAdvisorNotice, "info");
         return;
@@ -6141,7 +6452,7 @@ var registerManualCommand = (runtime) => {
 // src/commands/model-commands.ts
 var registerModelCommands = (runtime) => {
   runtime.pi.registerCommand("advisor", {
-    description: "Enable the Executor/Advisor flow and switch to the configured or explicitly selected Executor model; accepts contextMaxChars=N",
+    description: "Enable the Executor/Advisor flow and switch to the configured or explicitly selected Executor model; accepts contextMaxChars=N and scope=global|project",
     handler: (args, ctx) => activateAdvisor(runtime, args, ctx)
   });
   runtime.pi.registerCommand("advisor-models", {
@@ -6150,29 +6461,50 @@ var registerModelCommands = (runtime) => {
       if (!(loadCommandConfig(ctx) && ctx.hasUI)) {
         return;
       }
-      const persisted = getPersistedModelRefs();
+      const scope = await selectSettingsScope(ctx);
+      if (!scope) {
+        return;
+      }
+      const project = scope.kind === "project" ? getProjectSettingsProfile(ctx) : undefined;
+      const global = scope.kind === "global" ? readGlobalConfig(ctx) : undefined;
+      const label = scope.kind === "global" ? "Global" : `For this project: ${scope.target}${project?.inheritedProfilePath ? ` · inherits from ${project.inheritedProfilePath}` : ""}`;
       const selection = await selectAdvisorModels(ctx, {
-        advisor: persisted.advisor ? advisorRef : "",
-        advisorEffort: advisorEffortRef,
-        executor: runtime.pendingExecutorModelRef ?? (persisted.executor ? executorRef : ""),
-        executorEffort: executorEffortRef,
+        advisor: scope.kind === "global" ? global?.advisor ?? "" : advisorRef,
+        advisorEffort: scope.kind === "global" ? global?.advisorEffort : advisorEffortRef,
+        executor: pendingExecutorModelRef(runtime, ctx) ?? (scope.kind === "global" ? global?.executor ?? "" : executorRef),
+        executorEffort: scope.kind === "global" ? global?.executorEffort : executorEffortRef,
+        scopeLabel: label,
         selectAdvisor: true,
         selectExecutor: true
       });
       if (!selection) {
         return;
       }
-      setExecutorRef(selection.executor);
-      setAdvisorRef(selection.advisor);
-      setExecutorEffortRef(selection.executorEffort);
-      setAdvisorEffortRef(selection.advisorEffort);
-      const path = saveConfig(ctx, {
-        persistAdvisor: true,
-        persistExecutor: true
-      });
-      runtime.pendingExecutorModelRef = undefined;
-      runtime.updateSameModelNotice(ctx);
-      ctx.ui.notify(`Saved Executor + Advisor configurations to ${path}`, "info");
+      const error = await validateAdvisorModels(ctx, selection.advisor, selection.executor);
+      if (error) {
+        notify(ctx, error, "error");
+        return;
+      }
+      const values = {
+        advisor: selection.advisor,
+        advisorEffort: selection.advisorEffort,
+        executor: selection.executor,
+        executorEffort: selection.executorEffort
+      };
+      try {
+        const path = scope.kind === "global" ? updateGlobalConfigValues(ctx, values) : updateProjectConfigValues(ctx, scope.target, {
+          ...values,
+          advisorEffort: selection.advisorEffort ?? "",
+          executorEffort: selection.executorEffort ?? ""
+        });
+        loadCommandConfig(ctx);
+        setPendingExecutorModelRef(runtime, ctx, undefined);
+        runtime.updateSameModelNotice(ctx);
+        ctx.ui.notify(`Saved Executor + Advisor configurations for ${label} to ${path}`, "info");
+      } catch (saveError) {
+        const message = saveError instanceof Error ? saveError.message : String(saveError);
+        notify(ctx, `Could not save Advisor models: ${message}`, "error");
+      }
     }
   });
 };
@@ -6262,7 +6594,12 @@ var registerCommandRenderers = (runtime) => {
 
 // src/ui/settings-selector.ts
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import { SettingsList, truncateToWidth as truncateToWidth7 } from "@earendil-works/pi-tui";
+import {
+  Key as Key5,
+  matchesKey as matchesKey5,
+  SettingsList,
+  truncateToWidth as truncateToWidth8
+} from "@earendil-works/pi-tui";
 
 // src/ui/settings-formatting.ts
 import { visibleWidth as visibleWidth3 } from "@earendil-works/pi-tui";
@@ -7257,8 +7594,160 @@ class SearchableModelMultiSelector extends ModelSelectorAdapter {
   }
 }
 
+// src/ui/profile-removal-submenu.ts
+import { Key as Key3, matchesKey as matchesKey3, truncateToWidth as truncateToWidth6 } from "@earendil-works/pi-tui";
+
+class ProfileRemovalSubmenu {
+  onCancel;
+  onConfirm;
+  text;
+  theme;
+  tui;
+  _focused = true;
+  get focused() {
+    return this._focused;
+  }
+  set focused(value) {
+    this._focused = value;
+  }
+  constructor(options) {
+    this.onCancel = options.onCancel;
+    this.onConfirm = options.onConfirm;
+    this.text = options.text;
+    this.theme = options.theme;
+    this.tui = options.tui;
+  }
+  invalidate() {
+    this.tui.requestRender();
+  }
+  render(width) {
+    return [
+      this.theme.fg("error", this.theme.bold("  Remove project profile?")),
+      "",
+      this.theme.fg("muted", `  ${this.text}`),
+      "",
+      this.theme.fg("error", "  Enter: remove profile · Esc: keep profile")
+    ].map((line) => truncateToWidth6(line, width));
+  }
+  handleInput(keyData) {
+    if (matchesKey3(keyData, Key3.enter) || keyData === "\r") {
+      this.onConfirm();
+      return;
+    }
+    if (matchesKey3(keyData, Key3.escape) || keyData === "\x1B") {
+      this.onCancel();
+      return;
+    }
+    this.tui.requestRender();
+  }
+}
+
+// src/ui/settings-scope.ts
+var SETTING_CONFIG_KEYS = {
+  alwaysOn: "alwaysOn",
+  autoLoopGate: "advisorAutoLoopGate",
+  blockOnBlocked: "advisorBlockOnBlocked",
+  collapseResponses: "advisorCollapseResponses",
+  completionGate: "advisorCompletionGate",
+  context: "contextMaxChars",
+  customRule: "advisorCustomInvocation",
+  disableSameModel: "advisorDisableSameModel",
+  effort: "advisorEffort",
+  failureGate: "advisorFailureGate",
+  failureMode: "gateFailureMode",
+  gitContext: "advisorGitContext",
+  gitContextMaxChars: "advisorGitContextMaxChars",
+  herdrIntegration: "advisorHerdrIntegration",
+  jevDigestMaxChars: "advisorJevDigestMaxChars",
+  jevFilter: "advisorJevFilterEnabled",
+  jevFilterNoulMargin: "advisorJevFilterNoulMargin",
+  jevFilterOverrideWindow: "advisorJevFilterOverrideWindow",
+  jevFilterSkipConfidence: "advisorJevFilterSkipConfidence",
+  jevModel: "advisorJevModel",
+  jevPricePerMtok: "advisorJevPricePerMtok",
+  jevTimeoutMs: "advisorJevTimeoutMs",
+  jevTransport: "advisorJevTransport",
+  jevTurnGateEveryTurns: "advisorJevTurnGateEveryTurns",
+  jevTurnGateNoulThreshold: "advisorJevTurnGateNoulThreshold",
+  loopThreshold: "advisorLoopThreshold",
+  maxCallsPerSession: "advisorMaxCallsPerSession",
+  modelWhitelist: "advisorModelWhitelist",
+  outcomeLogging: "advisorOutcomeLogging",
+  planGate: "advisorPlanGate",
+  redactSecrets: "advisorRedactSecrets",
+  scoutEnabled: "advisorScoutEnabled",
+  scoutTimeoutMs: "advisorScoutTimeoutMs",
+  sessionSummary: "advisorSessionSummary",
+  showUsageDetails: "showUsageDetails",
+  showUsageFooter: "showUsageFooter",
+  simpleMode: "simpleMode",
+  toolPolicies: "advisorToolPolicies",
+  toolResultMaxBytes: "advisorToolResultMaxBytes",
+  toolResultMaxLines: "advisorToolResultMaxLines",
+  trackedFileContent: "advisorTrackedFileContent",
+  untrackedContent: "advisorUntrackedContent"
+};
+var isSettingId = (id) => Object.hasOwn(SETTING_CONFIG_KEYS, id);
+var settingConfigKey = (id) => isSettingId(id) ? SETTING_CONFIG_KEYS[id] : undefined;
+var settingConfigValue = (id, settings) => {
+  const key = settingConfigKey(id);
+  if (!key) {
+    return {};
+  }
+  const values = {
+    advisor: undefined,
+    advisorAutoLoopGate: settings.autoLoopGate,
+    advisorBlockOnBlocked: settings.blockOnBlocked,
+    advisorCollapseResponses: settings.collapseResponses,
+    advisorCompletionGate: settings.completionGate,
+    advisorCustomInvocation: settings.customRule ?? "",
+    advisorDisableSameModel: settings.disableSameModel,
+    advisorEffort: settings.effort ?? "",
+    advisorFailureGate: settings.failureGate,
+    advisorGitContext: settings.gitContext,
+    advisorGitContextMaxChars: settings.gitContextMaxChars,
+    advisorHerdrIntegration: settings.herdrIntegration,
+    advisorJevDigestMaxChars: settings.jevDigestMaxChars,
+    advisorJevFilterEnabled: settings.jevFilterEnabled,
+    advisorJevFilterNoulMargin: settings.jevFilterNoulMargin,
+    advisorJevFilterOverrideWindow: settings.jevFilterOverrideWindow,
+    advisorJevFilterSkipConfidence: settings.jevFilterSkipConfidence,
+    advisorJevModel: settings.jevModel ?? "",
+    advisorJevPricePerMtok: settings.jevPricePerMtok,
+    advisorJevTimeoutMs: settings.jevTimeoutMs,
+    advisorJevTransport: settings.jevTransport,
+    advisorJevTurnGateEveryTurns: settings.jevTurnGateEveryTurns,
+    advisorJevTurnGateNoulThreshold: settings.jevTurnGateNoulThreshold,
+    advisorLoopThreshold: settings.loopThreshold,
+    advisorMaxCallsPerSession: settings.maxCallsPerSession,
+    advisorModelWhitelist: settings.modelWhitelist,
+    advisorOutcomeLogging: settings.outcomeLogging,
+    advisorPlanGate: settings.planGate,
+    advisorRedactSecrets: settings.redactSecrets,
+    advisorScoutEnabled: settings.scoutEnabled,
+    advisorScoutTimeoutMs: settings.scoutTimeoutMs,
+    advisorSessionSummary: settings.sessionSummary,
+    advisorToolPolicies: settings.toolPolicies,
+    advisorToolResultMaxBytes: settings.toolResultMaxBytes,
+    advisorToolResultMaxLines: settings.toolResultMaxLines,
+    advisorTrackedFileContent: settings.trackedFileContent,
+    advisorUntrackedContent: settings.untrackedContent,
+    alwaysOn: settings.alwaysOn,
+    contextMaxChars: settings.contextMaxChars,
+    executor: undefined,
+    executorEffort: undefined,
+    gateFailureMode: settings.failureMode,
+    showUsageDetails: settings.showUsageDetails,
+    showUsageFooter: settings.showUsageFooter,
+    simpleMode: settings.simpleMode
+  };
+  const value = {};
+  Object.assign(value, { [key]: values[key] });
+  return value;
+};
+
 // src/ui/text-setting-submenu.ts
-import { Input as Input3, truncateToWidth as truncateToWidth6 } from "@earendil-works/pi-tui";
+import { Input as Input3, truncateToWidth as truncateToWidth7 } from "@earendil-works/pi-tui";
 
 class TextSettingSubmenu {
   input = new Input3;
@@ -7305,7 +7794,7 @@ class TextSettingSubmenu {
       lines.push(theme.fg("error", `  ${this.error}`));
     }
     lines.push("", theme.fg("dim", "  Enter: apply · Esc: cancel"));
-    return lines.map((line) => truncateToWidth6(line, width));
+    return lines.map((line) => truncateToWidth7(line, width));
   }
   handleInput(keyData) {
     const before = this.input.getValue();
@@ -7450,10 +7939,45 @@ var advisorModelWhitelistItem = (settings, modelRefs, keybindings, theme, tui) =
     tui
   })
 });
+var withScopeProvenance = (items, scope, theme, tui) => {
+  if (scope?.kind !== "project") {
+    return items;
+  }
+  const overrides = new Set(scope.overrideKeys);
+  const inheritedFrom = scope.inheritedProfilePath ? `parent profile ${scope.inheritedProfilePath}` : "global/default settings";
+  const scopedItems = items.map((item) => {
+    const key = settingConfigKey(item.id);
+    const provenance = key && overrides.has(key) ? "Project override." : `Inherited from ${inheritedFrom}.`;
+    return {
+      ...item,
+      description: `${provenance} ${item.description ?? ""}`.trim()
+    };
+  });
+  if (!scope.profileExists) {
+    return scopedItems;
+  }
+  return [
+    {
+      currentValue: "Enter",
+      description: `Delete overrides for ${scope.target}. Values then use ${inheritedFrom}; provider may change.`,
+      id: "removeProjectProfile",
+      label: "Remove this project profile",
+      submenu: (_currentValue, done) => new ProfileRemovalSubmenu({
+        onCancel: () => done(),
+        onConfirm: () => done("remove"),
+        text: `Remove overrides for ${scope.target}. Settings then use ${inheritedFrom}; Advisor provider may change.`,
+        theme,
+        tui
+      })
+    },
+    ...scopedItems
+  ];
+};
 var createSettingsItems = ({
   effortLevels,
   modelWhitelist,
   presets,
+  scope,
   settings,
   theme,
   tui
@@ -7483,7 +8007,7 @@ var createSettingsItems = ({
   ];
   if (settings.simpleMode) {
     items.push(modelWhitelist, toggle("disableSameModel", "Disable same-model Advisor", "Skip advice when the active Executor and Advisor use the same provider/model; turn off to allow higher-effort same-model reviews.", settings.disableSameModel, true));
-    return items;
+    return withScopeProvenance(items, scope, theme, tui);
   }
   items.push({
     currentValue: currentEffort(settings.effort),
@@ -7589,11 +8113,11 @@ var createSettingsItems = ({
       tui
     })
   }, toggle("trackedFileContent", "Tracked file content", "Allow tracked file contents to be sent with Advisor context.", settings.trackedFileContent, false), toggle("untrackedContent", "Untracked file content", "Allow untracked file contents to be sent with Advisor context.", settings.untrackedContent, false), toggle("outcomeLogging", "Outcome logging (global)", "Allow anonymized Advisor outcomes to be logged globally.", settings.outcomeLogging, false), ...jevItems(settings, theme, tui));
-  return items;
+  return withScopeProvenance(items, scope, theme, tui);
 };
 
 // src/ui/settings-list-adapter.ts
-import { Key as Key3, matchesKey as matchesKey3 } from "@earendil-works/pi-tui";
+import { Key as Key4, matchesKey as matchesKey4 } from "@earendil-works/pi-tui";
 
 class SettingsListAdapter {
   list;
@@ -7625,11 +8149,18 @@ class SettingsListAdapter {
       this.privateFields().selectedIndex = selectedIndex;
     }
   }
+  selectedIdForReset() {
+    const fields = this.privateFields();
+    if (fields.submenuComponent || fields.searchInput?.getValue()) {
+      return;
+    }
+    return fields.filteredItems[fields.selectedIndex]?.id;
+  }
   changeWithArrow(keyData, onChange) {
     let direction = 0;
-    if (matchesKey3(keyData, Key3.left) || keyData === "\x1B[D") {
+    if (matchesKey4(keyData, Key4.left) || keyData === "\x1B[D") {
       direction = -1;
-    } else if (matchesKey3(keyData, Key3.right) || keyData === "\x1B[C") {
+    } else if (matchesKey4(keyData, Key4.right) || keyData === "\x1B[C") {
       direction = 1;
     }
     if (direction === 0) {
@@ -7867,10 +8398,30 @@ class AdvisorSettingsSelector {
   }
   render(width) {
     const border = this.options.theme.fg("border", "─".repeat(Math.max(1, width)));
-    return [border, ...this.settingsList.render(width), border].map((line) => truncateToWidth7(line, width));
+    const { scope } = this.options;
+    let scopeLines = [];
+    if (scope?.kind === "project") {
+      scopeLines = [
+        this.options.theme.fg("muted", `  Scope: For this project · ${scope.target}`),
+        this.options.theme.fg("dim", `  Overrides marked in row detail. Backspace removes selected override.${scope.inheritedProfilePath ? ` Parent profile: ${scope.inheritedProfilePath}` : ""}`)
+      ];
+    } else if (scope) {
+      scopeLines = [
+        this.options.theme.fg("muted", "  Scope: Global · defaults for projects without an override")
+      ];
+    }
+    return [
+      border,
+      ...scopeLines,
+      ...this.settingsList.render(width),
+      border
+    ].map((line) => truncateToWidth8(line, width));
   }
   handleInput(keyData) {
-    if (!this.settingsList.changeWithArrow(keyData, (id, value) => this.change(id, value))) {
+    const resetId = matchesKey5(keyData, Key5.backspace) || keyData === "" ? this.settingsList.selectedIdForReset() : undefined;
+    if (resetId) {
+      this.resetOverride(resetId);
+    } else if (!this.settingsList.changeWithArrow(keyData, (id, value) => this.change(id, value))) {
       this.settingsList.handleInput(keyData);
     }
     this.options.tui.requestRender();
@@ -7889,6 +8440,7 @@ class AdvisorSettingsSelector {
       effortLevels: this.options.effortLevels,
       modelWhitelist,
       presets: this.presets,
+      scope: this.options.scope,
       settings: this.settings,
       theme: this.options.theme,
       tui: this.options.tui
@@ -7916,7 +8468,27 @@ class AdvisorSettingsSelector {
     this.simpleModeGradientStartedAt = undefined;
   }
   change(id, value) {
-    mutateAdvisorSettings(this.settings, id, value, this.presets);
+    if (id === "removeProjectProfile" && value === "remove") {
+      if (this.options.onRemoveProfile?.()) {
+        this.options.onCancel();
+      }
+      return;
+    }
+    const next = {
+      ...this.settings,
+      modelWhitelist: [...this.settings.modelWhitelist ?? []],
+      toolPolicies: { ...this.settings.toolPolicies }
+    };
+    mutateAdvisorSettings(next, id, value, this.presets);
+    const saved = this.options.onSettingChange?.(id, next);
+    if (this.options.onSettingChange && !saved) {
+      this.settingsList = this.createSettingsList(id);
+      return;
+    }
+    Object.assign(this.settings, saved ?? next);
+    this.afterChange(id);
+  }
+  afterChange(id) {
     if (id === "simpleMode") {
       if (this.settings.simpleMode) {
         this.startSimpleModeGradient();
@@ -7924,79 +8496,79 @@ class AdvisorSettingsSelector {
         this.stopSimpleModeGradient();
       }
     }
-    (this.options.onChange ?? this.options.onSave)?.({
-      ...this.settings,
-      showUsageDetails: this.settings.showUsageDetails ?? true,
-      toolPolicies: { ...this.settings.toolPolicies }
-    });
+    if (!this.options.onSettingChange) {
+      (this.options.onChange ?? this.options.onSave)?.({
+        ...this.settings,
+        showUsageDetails: this.settings.showUsageDetails ?? true,
+        toolPolicies: { ...this.settings.toolPolicies }
+      });
+    }
     if (id === "context" || id === "simpleMode" || id === "customRule" || id === "modelWhitelist" || id === "toolPolicies") {
       this.settingsList = this.createSettingsList(id);
     }
   }
+  resetOverride(id) {
+    const { scope } = this.options;
+    const key = settingConfigKey(id);
+    if (scope?.kind !== "project" || !key || !scope.overrideKeys.includes(key)) {
+      return;
+    }
+    const settings = this.options.onResetOverride?.(id);
+    if (!settings) {
+      return;
+    }
+    Object.assign(this.settings, settings);
+    this.options.scope = {
+      ...scope,
+      overrideKeys: scope.overrideKeys.filter((override) => override !== key)
+    };
+    this.settingsList = this.createSettingsList(id);
+  }
 }
 
 // src/commands/settings-persistence.ts
-var applySessionSettings = (settings) => {
-  setAdvisorEffortRef(settings.effort === "Default (Model Default)" ? undefined : settings.effort);
-  setContextMaxCharsRef(settings.contextMaxChars);
-  setAdvisorPlanGateRef(settings.planGate);
-  setAdvisorFailureGateRef(settings.failureGate);
-  setAdvisorCompletionGateRef(settings.completionGate);
-  setAdvisorDisableSameModelRef(settings.disableSameModel ?? true);
-  setAdvisorCollapseResponsesRef(settings.collapseResponses);
-  setAdvisorCustomInvocationRef(settings.customRule);
-  setAdvisorBlockOnBlockedRef(settings.blockOnBlocked ?? true);
-  setAdvisorAutoLoopGateRef(settings.autoLoopGate ?? true);
-  setAdvisorLoopThresholdRef(settings.loopThreshold ?? 3);
-  setAdvisorMaxCallsPerSessionRef(settings.maxCallsPerSession);
-  setAdvisorModelWhitelistRef(settings.modelWhitelist ?? []);
-  setAdvisorSessionSummaryRef(settings.sessionSummary ?? false);
-  setAdvisorScoutEnabledRef(settings.scoutEnabled ?? false);
-  setAdvisorScoutTimeoutMsRef(settings.scoutTimeoutMs ?? DEFAULT_SCOUT_TIMEOUT_MS);
-  setShowUsageDetailsRef(settings.showUsageDetails ?? true);
-  setShowUsageFooterRef(settings.showUsageFooter ?? false);
-  setSimpleModeRef(settings.simpleMode ?? false);
-  setAlwaysOnRef(settings.alwaysOn ?? false);
-  setAdvisorFailureModeRef(settings.failureMode ?? "block-session");
-  setAdvisorHerdrIntegrationRef(settings.herdrIntegration ?? true);
+var getGlobalAdvisorSettings = (ctx) => {
+  const global = readGlobalConfig(ctx);
+  resetDefaults();
+  applyConfig(global);
+  const settings = getAdvisorSettings();
+  try {
+    loadConfig(ctx);
+  } catch {
+    resetDefaults();
+    applyConfig(global);
+  }
+  return settings;
 };
-var applyJevSettings = (settings) => {
-  setAdvisorJevFilterEnabledRef(settings.jevFilterEnabled ?? false);
-  setAdvisorJevFilterSkipConfidenceRef(settings.jevFilterSkipConfidence ?? DEFAULT_JEV_FILTER_SKIP_CONFIDENCE);
-  setAdvisorJevFilterNoulMarginRef(settings.jevFilterNoulMargin ?? DEFAULT_JEV_FILTER_NOUL_MARGIN);
-  setAdvisorJevFilterOverrideWindowRef(settings.jevFilterOverrideWindow ?? DEFAULT_JEV_FILTER_OVERRIDE_WINDOW);
-  setAdvisorJevModelRef(settings.jevModel ?? DEFAULT_JEV_MODEL);
-  setAdvisorJevTimeoutMsRef(settings.jevTimeoutMs ?? DEFAULT_JEV_TIMEOUT_MS);
-  setAdvisorJevDigestMaxCharsRef(settings.jevDigestMaxChars ?? DEFAULT_JEV_DIGEST_MAX_CHARS);
-  setAdvisorJevPricePerMtokRef(settings.jevPricePerMtok ?? DEFAULT_JEV_PRICE_PER_MTOK);
-  setAdvisorJevTransportRef(settings.jevTransport ?? DEFAULT_JEV_TRANSPORT);
-  setAdvisorJevTurnGateEveryTurnsRef(settings.jevTurnGateEveryTurns ?? DEFAULT_JEV_TURN_GATE_EVERY_TURNS);
-  setAdvisorJevTurnGateNoulThresholdRef(settings.jevTurnGateNoulThreshold ?? DEFAULT_JEV_TURN_GATE_NOUL_THRESHOLD);
+var reloadSettings = (ctx) => {
+  loadConfig(ctx);
+  return getAdvisorSettings();
 };
-var applyDisclosureSettings = (settings) => {
-  setAdvisorToolResultMaxLinesRef(settings.toolResultMaxLines ?? 2000);
-  setAdvisorToolResultMaxBytesRef(settings.toolResultMaxBytes ?? 50 * 1024);
-  setAdvisorRedactSecretsRef(settings.redactSecrets ?? false);
-  setAdvisorGitContextRef(settings.gitContext ?? "summary");
-  setAdvisorGitContextMaxCharsRef(settings.gitContextMaxChars ?? 20000);
-  setAdvisorToolPoliciesRef(settings.toolPolicies ?? {});
-  setAdvisorTrackedFileContentRef(settings.trackedFileContent ?? false);
-  setAdvisorUntrackedContentRef(settings.untrackedContent ?? false);
-  setAdvisorOutcomeLoggingRef(settings.outcomeLogging ?? false);
+var saveScopedAdvisorSetting = (ctx, scope, id, settings) => {
+  const value = settingConfigValue(id, settings);
+  if (Object.keys(value).length === 0) {
+    return getAdvisorSettings();
+  }
+  if (scope.kind === "global") {
+    updateGlobalConfig(ctx, value);
+    return getGlobalAdvisorSettings(ctx);
+  }
+  updateProjectConfig(ctx, (overrides) => ({ ...overrides, ...value }));
+  return reloadSettings(ctx);
 };
-var applyAdvisorSettings = (settings) => {
-  applySessionSettings(settings);
-  applyJevSettings(settings);
-  applyDisclosureSettings(settings);
+var resetProjectAdvisorSetting = (ctx, id) => {
+  const key = settingConfigKey(id);
+  if (!key) {
+    return;
+  }
+  updateProjectConfig(ctx, (overrides) => Object.fromEntries(Object.entries(overrides).filter(([override]) => override !== key)));
+  return reloadSettings(ctx);
 };
-var saveAdvisorSettings = (ctx, settings) => {
-  applyAdvisorSettings(settings);
-  const persisted = getPersistedModelRefs();
-  saveConfig(ctx, {
-    persistAdvisor: Boolean(persisted.advisor),
-    persistExecutor: Boolean(persisted.executor)
-  });
-  saveGlobalOutcomeLogging(settings.outcomeLogging ?? false);
+var removeProjectAdvisorSettings = (ctx) => {
+  if (!removeProjectConfig(ctx)) {
+    return;
+  }
+  return reloadSettings(ctx);
 };
 
 // src/commands/settings-commands.ts
@@ -8004,27 +8576,96 @@ var registerSettingsCommands = (runtime) => {
   runtime.pi.registerCommand("advisor-settings", {
     description: "Configure Advisor settings",
     handler: async (_args, ctx) => {
-      if (!(loadCommandConfig(ctx) && ctx.hasUI)) {
+      if (!ctx.hasUI) {
         return;
       }
-      const initial = getAdvisorSettings();
+      try {
+        readGlobalConfig(ctx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        notify(ctx, `Advisor command could not load configuration: ${message} Fix advisor.json and retry.`, "error");
+        return;
+      }
+      const selected = await selectSettingsScope(ctx);
+      if (!selected) {
+        return;
+      }
+      let initial;
+      let scope;
+      try {
+        if (selected.kind === "global") {
+          initial = getGlobalAdvisorSettings(ctx);
+          scope = selected;
+        } else {
+          if (!loadCommandConfig(ctx)) {
+            return;
+          }
+          const profile = getProjectSettingsProfile(ctx);
+          initial = getAdvisorSettings();
+          scope = {
+            inheritedProfilePath: profile.inheritedProfilePath,
+            kind: "project",
+            overrideKeys: profile.overrideKeys,
+            profileExists: profile.profileExists,
+            target: profile.target
+          };
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Could not load Advisor settings: ${message}`, "error");
+        return;
+      }
       await ctx.ui.custom((tui, theme, keybindings, done) => new AdvisorSettingsSelector({
         effortLevels: EFFORT_LEVELS,
         initial,
         keybindings,
         modelRefs: getConfiguredModelRefs(ctx),
         onCancel: () => done(undefined),
-        onChange: (settings) => {
+        onRemoveProfile: () => {
           try {
-            saveAdvisorSettings(ctx, settings);
+            const settings = removeProjectAdvisorSettings(ctx);
+            if (settings) {
+              runtime.updateSameModelNotice(ctx);
+              runtime.updateAdvisorUsageStatus(ctx);
+            }
+            return settings;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            ctx.ui.notify(`Could not remove project profile: ${message}`, "error");
+            return;
+          }
+        },
+        onResetOverride: (id) => {
+          if (scope.kind !== "project") {
+            return;
+          }
+          try {
+            const settings = resetProjectAdvisorSetting(ctx, id);
+            if (settings) {
+              runtime.updateSameModelNotice(ctx);
+              runtime.updateAdvisorUsageStatus(ctx);
+            }
+            return settings;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            ctx.ui.notify(`Could not reset project override: ${message}`, "error");
+            return;
+          }
+        },
+        onSettingChange: (id, settings) => {
+          try {
+            const saved = saveScopedAdvisorSetting(ctx, scope, id, settings);
             runtime.updateSameModelNotice(ctx);
             runtime.updateAdvisorUsageStatus(ctx);
+            return saved;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             ctx.ui.notify(`Could not save Advisor settings: ${message}`, "error");
+            return;
           }
         },
         presets: CONTEXT_PRESETS,
+        scope,
         theme,
         tui
       }));
@@ -8037,12 +8678,8 @@ var registerSettingsCommands = (runtime) => {
       runtime.resetSameModelNotice();
       const wasAlwaysOn = alwaysOnRef;
       if (wasAlwaysOn) {
-        const persisted = getPersistedModelRefs();
         setAlwaysOnRef(false);
-        saveConfig(ctx, {
-          persistAdvisor: Boolean(persisted.advisor),
-          persistExecutor: Boolean(persisted.executor)
-        });
+        updateGlobalConfigValues(ctx, { alwaysOn: false });
       }
       notify(ctx, `Advisor flow disabled. Current model unchanged.${wasAlwaysOn ? " Always on turned off." : ""}`, "info");
       return Promise.resolve();

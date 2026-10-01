@@ -199,6 +199,25 @@ describe("User-owned project profiles", () => {
     expect(executorRef).toBe("two/executor");
   });
 
+  test("normalizes a canonical-equivalent profile key during updates", () => {
+    const target = join(root, "target");
+    const storedKey = join(target, "..", "target");
+    mkdirSync(target);
+    writeConfig({
+      projectProfiles: {
+        [storedKey]: { overrides: { executor: "old/executor" } },
+      },
+    });
+
+    saveProjectConfig(context(target), { executor: "new/executor" });
+
+    expect(readConfig().projectProfiles).toEqual({
+      [canonicalProjectDirectory(target)]: {
+        overrides: { executor: "new/executor" },
+      },
+    });
+  });
+
   test("writes sparse profiles from fresh disk data and retains an empty child", () => {
     const target = join(root, "target");
     const other = join(root, "other");

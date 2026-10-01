@@ -1,6 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import { applyConfig, resetDefaults } from "../config/defaults.ts";
 import {
+  getAdvisorSettings,
   getPersistedModelRefs,
   setAdvisorAutoLoopGateRef,
   setAdvisorBlockOnBlockedRef,
@@ -45,7 +47,14 @@ import {
   setShowUsageFooterRef,
   setSimpleModeRef,
 } from "../config/state.ts";
-import { saveConfig, saveGlobalOutcomeLogging } from "../config/storage.ts";
+import {
+  loadConfig,
+  readGlobalConfig,
+  removeProjectConfig,
+  saveConfig,
+  updateGlobalConfig,
+  updateProjectConfig,
+} from "../config/storage.ts";
 import {
   DEFAULT_JEV_DIGEST_MAX_CHARS,
   DEFAULT_JEV_FILTER_NOUL_MARGIN,
@@ -59,6 +68,8 @@ import {
   DEFAULT_JEV_TURN_GATE_NOUL_THRESHOLD,
   DEFAULT_SCOUT_TIMEOUT_MS,
 } from "../config/types.ts";
+import { settingConfigKey, settingConfigValue } from "../ui/settings-scope.ts";
+import type { SettingsEditScope } from "../ui/settings-scope.ts";
 import type { AdvisorSettings } from "../ui/types.ts";
 
 const applySessionSettings = (settings: AdvisorSettings) => {
@@ -136,6 +147,20 @@ const applyAdvisorSettings = (settings: AdvisorSettings) => {
   applyDisclosureSettings(settings);
 };
 
+export const getGlobalAdvisorSettings = (ctx: ExtensionContext) => {
+  const global = readGlobalConfig(ctx);
+  resetDefaults();
+  applyConfig(global);
+  const settings = getAdvisorSettings();
+  try {
+    loadConfig(ctx);
+  } catch {
+    resetDefaults();
+    applyConfig(global);
+  }
+  return settings;
+};
+
 export const saveAdvisorSettings = (
   ctx: ExtensionContext,
   settings: AdvisorSettings
@@ -146,5 +171,53 @@ export const saveAdvisorSettings = (
     persistAdvisor: Boolean(persisted.advisor),
     persistExecutor: Boolean(persisted.executor),
   });
-  saveGlobalOutcomeLogging(settings.outcomeLogging ?? false);
+  updateGlobalConfig(ctx, {
+    advisorOutcomeLogging: settings.outcomeLogging ?? false,
+  });
+};
+
+const reloadSettings = (ctx: ExtensionContext) => {
+  loadConfig(ctx);
+  return getAdvisorSettings();
+};
+
+export const saveScopedAdvisorSetting = (
+  ctx: ExtensionContext,
+  scope: SettingsEditScope,
+  id: string,
+  settings: AdvisorSettings
+) => {
+  const value = settingConfigValue(id, settings);
+  if (Object.keys(value).length === 0) {
+    return getAdvisorSettings();
+  }
+  if (scope.kind === "global") {
+    updateGlobalConfig(ctx, value);
+    return getGlobalAdvisorSettings(ctx);
+  }
+  updateProjectConfig(ctx, (overrides) => ({ ...overrides, ...value }));
+  return reloadSettings(ctx);
+};
+
+export const resetProjectAdvisorSetting = (
+  ctx: ExtensionContext,
+  id: string
+) => {
+  const key = settingConfigKey(id);
+  if (!key) {
+    return;
+  }
+  updateProjectConfig(ctx, (overrides) =>
+    Object.fromEntries(
+      Object.entries(overrides).filter(([override]) => override !== key)
+    )
+  );
+  return reloadSettings(ctx);
+};
+
+export const removeProjectAdvisorSettings = (ctx: ExtensionContext) => {
+  if (!removeProjectConfig(ctx)) {
+    return;
+  }
+  return reloadSettings(ctx);
 };

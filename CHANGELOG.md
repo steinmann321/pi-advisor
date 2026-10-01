@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0/).
 
+## Unreleased
+
+### Added
+
+- **Trusted project profiles** — choose Global or For this project in Advisor settings and model dialogs. Trusted projects may save sparse path-associated overrides for every setting, including Executor/Advisor models, Scout, disclosure consent, and outcome logging, in user-owned `advisor.json`; repository `.pi/advisor.json` remains ignored. Profile failures show safe profile/model provenance without silently selecting another provider, while unrelated profile failures stay isolated.
+
 ## 0.9.0 - 2026-09-28
 
 ### Added

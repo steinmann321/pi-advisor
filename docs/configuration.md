@@ -1,8 +1,10 @@
 # Configuration
 
-Use `/advisor-models` and `/advisor-settings` to configure pi-advisor. Both commands save to the global `advisor.json` in the Pi agent directory. `/advisor-settings` uses Pi's compact searchable settings list: type to fuzzy-search a control, press Enter or Space to change it, and every valid change is saved immediately.
+Use `/advisor-models` and `/advisor-settings` to configure pi-advisor. Both first select **Global** or **For this project**. Global values remain defaults. Project values are sparse user-owned overrides in same Pi-agent `advisor.json`, under canonical absolute paths; no separate profile file exists. `/advisor-settings` uses Pi's compact searchable settings list: type to fuzzy-search a control, press Enter or Space to change it, and every valid change is saved immediately.
 
-Repository-controlled project `advisor.json` files are not applied. Models, prompts, gates, budgets, disclosure, redaction, integrations, and consent remain under the user's global configuration.
+Project scope requires Pi Project Trust (`/trust`) at selection, save, removal, and use time. It never grants provider, disclosure, logging, or credential consent. Project rows show explicit override or inherited provenance; Backspace removes one explicit override, while confirmed profile removal removes only current canonical path and can reveal parent/global provider. Empty child profiles remain until explicit removal. Every setting supports project override, including models, reasoning, gates, disclosure, Scout, Jev, and outcome logging. Credentials, OAuth state, and secrets remain user-owned and are never copied into profiles.
+
+Repository-controlled `.pi/advisor.json` files are never applied or written, trusted or not. A selected profile that is untrusted, malformed, unavailable, or unauthenticated makes Advisor unavailable with profile/model provenance; it never silently falls back to global models, a parent profile, or another provider. Unrelated malformed profiles remain isolated.
 
 `/advisor` also accepts `executor=`, `advisor=`, and `contextMaxChars=` overrides for the current activation. For example, `/advisor contextMaxChars=30000` sets the reconstructed-history limit; use `0` for no history. The `ALL` option in settings represents the complete current branch and remains subject to the Advisor model's context limit. On first use, or when either saved model ref is missing from the configuration or Pi's available model list, `/advisor` opens the available-model picker instead of silently choosing an unconfigured model. The selected Executor and Advisor refs are persisted only after both models pass activation checks.
 
@@ -62,7 +64,7 @@ All fields are optional. The model refs below are explicit examples of models av
 
 ## Advisor model whitelist
 
-`advisorModelWhitelist` is an optional global array of exact `provider/model` references. When it contains one or more entries, the Advisor tool and every automatic Advisor path are available only while the current Executor model matches one of those entries. A missing current model is denied when the list is non-empty. An empty list (the default) allows every model for backward compatibility. The same restriction applies even when `ask_advisor` is present in the active tool list.
+`advisorModelWhitelist` is an optional effective array of exact `provider/model` references. It can be inherited globally or explicitly project-scoped. When it contains one or more entries, the Advisor tool and every automatic Advisor path are available only while the current Executor model matches one of those entries. A missing current model is denied when the list is non-empty. An empty list (the default) allows every model for backward compatibility. The same restriction applies even when `ask_advisor` is present in the active tool list.
 
 The `/advisor-settings` row opens a searchable multi-select menu containing the models configured in Pi. Type to fuzzy-filter the list, use Space to toggle models, and press Enter to apply. The setting is checked before budgets, repeated-call tracking, Jev screening, or any Advisor provider request, so a denied model neither spends Advisor budget nor triggers a gate. Matching is exact and case-sensitive.
 
@@ -77,9 +79,9 @@ The `/advisor-settings` row opens a searchable multi-select menu containing the 
 
 ## Experimental Advisor Scout
 
-`advisorScoutEnabled` defaults to `false` and can only be loaded from the global `advisor.json`. The `Experimental Advisor Scout` row appears in advanced `/advisor-settings`. Simple mode hides the row without changing its saved value.
+`advisorScoutEnabled` defaults to `false` and can be global or project-scoped. The `Experimental Advisor Scout` row appears in advanced `/advisor-settings`. Simple mode hides the row without changing its saved value.
 
-When enabled, Scout runs before Executor-requested `ask_advisor` calls, `/advisor-manual`, and automatic gates. It resolves the configured `executor` model and `executorEffort`; it never substitutes the Advisor model or another model. The extra call adds latency and provider cost.
+When enabled, Scout runs before Executor-requested `ask_advisor` calls, `/advisor-manual`, and automatic gates. It resolves the same effective Executor model and effort as current Advisor operation; it never substitutes Advisor model or another model. A selected-profile trust, configuration, model, or authentication failure keeps Advisor unavailable rather than selecting global Executor. Extra call adds latency and provider cost.
 
 Scout receives at most 64 KiB of serialized manifest data in 64 protocol-safe groups, with a 24 KiB limit per group and bounded labels. It may select at most 32 groups and return up to 4 KiB of synthesis. The synthesis is labelled as untrusted inference and never replaces selected verbatim evidence. Required current-request context is always retained. The reconstructed Advisor conversation has a separate `contextMaxChars` budget, so manifest metadata does not consume that budget. If required context cannot fit either hard limit, Scout is skipped.
 
@@ -97,7 +99,7 @@ Scout usage, latency, selection counts, pre-Scout omissions, and fallback reason
 
 ## Consultation responses
 
-Normal consultations preserve the provider's final Markdown and never block execution. If the Advisor explicitly says it cannot review a specifically named file, the Executor may make a sequential follow-up call with `includeTrackedFiles` when global tracked-file consent is enabled; this is discretionary, not an automatic retry. When the Advisor has no material concern or recommendation, it may begin with the exact first line `Verdict: sound`. Pi renders that response with the static `◆ ADVISOR · SOUND` header for both `ask_advisor` results and `/advisor-manual`.
+Normal consultations preserve provider final Markdown and never block execution. If Advisor explicitly says it cannot review a specifically named file, Executor may make sequential follow-up call with `includeTrackedFiles` when effective tracked-file consent is enabled; this is discretionary, not automatic retry. When the Advisor has no material concern or recommendation, it may begin with the exact first line `Verdict: sound`. Pi renders that response with the static `◆ ADVISOR · SOUND` header for both `ask_advisor` results and `/advisor-manual`.
 
 ## Jev consultation filter (TypeSafe)
 

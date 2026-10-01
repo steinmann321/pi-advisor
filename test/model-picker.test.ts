@@ -30,6 +30,8 @@ const runModelsCommand = async (agentDir: string) => {
       hasUI: true,
       isProjectTrusted: () => false,
       modelRegistry: {
+        find: (provider: string, id: string) => ({ id, provider }),
+        getApiKeyAndHeaders: () => Promise.resolve({ apiKey: "key", ok: true }),
         getAvailable: () => [
           { id: "executor", provider: "provider" },
           { id: "advisor", provider: "provider" },
@@ -48,7 +50,10 @@ const runModelsCommand = async (agentDir: string) => {
             selector.handleInput("\r");
           }),
         notify: () => {},
-        select: (_title: string, choices: string[]) => {
+        select: (title: string, choices: string[]) => {
+          if (title.startsWith("Which Advisor configuration")) {
+            return Promise.resolve("Global");
+          }
           effortChoicesSeen.push(choices);
           return Promise.resolve(choices[0]);
         },

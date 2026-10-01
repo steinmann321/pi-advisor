@@ -297,7 +297,12 @@ describe("Advisor settings selector", () => {
         cwd: "/",
         hasUI: true,
         isProjectTrusted: () => false,
-        ui: { custom, notify: () => {}, setStatus: () => {} },
+        ui: {
+          custom,
+          notify: () => {},
+          select: async () => "Global",
+          setStatus: () => {},
+        },
       });
 
       await commands.get("advisor-settings").handler("", context);

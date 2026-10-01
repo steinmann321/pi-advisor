@@ -90,6 +90,10 @@ export const registerManualCommand = (runtime: CommandRuntime) => {
         question = resolveAdvisorRequest(args);
       }
 
+      // Recheck after interactive input in case profile trust or models changed.
+      if (!loadCommandConfig(ctx)) {
+        return;
+      }
       if (sameModelAdvisorDisabled(ctx)) {
         notify(ctx, sameModelAdvisorNotice, "info");
         return;

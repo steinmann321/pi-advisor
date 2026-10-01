@@ -60,6 +60,14 @@ export class SettingsListAdapter {
     }
   }
 
+  selectedIdForReset(): string | undefined {
+    const fields = this.privateFields();
+    if (fields.submenuComponent || fields.searchInput?.getValue()) {
+      return;
+    }
+    return fields.filteredItems[fields.selectedIndex]?.id;
+  }
+
   changeWithArrow(
     keyData: string,
     onChange: (id: string, value: string) => void

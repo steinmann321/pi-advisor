@@ -62,6 +62,7 @@ export interface CommandRuntime {
   >;
   nextManualProgressId: () => string;
   pendingExecutorModelRef: string | undefined;
+  pendingExecutorModelContext: string | undefined;
   readonly pi: ExtensionAPI;
   reportManualBudgetExhausted: (ctx: ExtensionContext) => void;
   readonly requestAdvisor: ManualConsult;

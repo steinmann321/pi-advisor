@@ -151,6 +151,30 @@ export const getExplicitModelError = (
   }
 };
 
+export const validateAdvisorModels = async (
+  ctx: ExtensionContext,
+  advisorRef: string,
+  executorRef: string
+): Promise<string | undefined> => {
+  for (const [label, ref] of [
+    ["Executor", executorRef],
+    ["Advisor", advisorRef],
+  ] as const) {
+    const model = findConfiguredModel(ctx, ref);
+    if (!model) {
+      return `${label} model not found: ${ref}`;
+    }
+    const available = getAvailableModelRefs(ctx);
+    if (available && !available.includes(ref)) {
+      return `${label} model unavailable: ${ref}`;
+    }
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!(auth.ok && auth.apiKey)) {
+      return `No API key for ${label} ${ref}`;
+    }
+  }
+};
+
 export interface ActivationModelPlan {
   pendingExecutor: string | undefined;
   selectAdvisor: boolean;

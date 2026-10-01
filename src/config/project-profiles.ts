@@ -9,11 +9,11 @@ import { validateConfig } from "./validation.ts";
 
 export const PROJECT_PROFILES_KEY = "projectProfiles";
 
-interface ProjectProfile {
+export interface ProjectProfile {
   overrides: AdvisorConfig;
 }
 
-interface SelectedProjectProfile {
+export interface SelectedProjectProfile {
   path: string;
   profile: ProjectProfile;
 }
@@ -71,6 +71,39 @@ const validateProfile = (value: JsonValue, path: string): ProjectProfile => {
     return invalidProfile(path, "expected only an overrides object");
   }
   return { overrides: validateOverrides(value.overrides, path) };
+};
+
+export const projectProfileKeyAt = (
+  profiles: JsonValue | undefined,
+  directory: string
+): string | undefined => {
+  if (profiles === undefined) {
+    return;
+  }
+  if (!isRecord(profiles)) {
+    throw new TypeError("Invalid projectProfiles: expected a JSON object.");
+  }
+  const path = canonicalProjectDirectory(directory);
+  const keys = Object.keys(profiles).filter(
+    (key) => isAbsolute(key) && canonicalProjectDirectory(key) === path
+  );
+  if (keys.length > 1) {
+    throw new TypeError(
+      `Invalid project profile at ${path}: duplicate canonical directory.`
+    );
+  }
+  return keys[0];
+};
+
+export const projectProfileAt = (
+  profiles: JsonValue | undefined,
+  directory: string
+): ProjectProfile | undefined => {
+  const key = projectProfileKeyAt(profiles, directory);
+  if (!key || !isRecord(profiles)) {
+    return;
+  }
+  return validateProfile(profiles[key], canonicalProjectDirectory(directory));
 };
 
 export const selectProjectProfile = (

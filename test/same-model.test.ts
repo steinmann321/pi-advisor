@@ -303,7 +303,12 @@ describe("same-model Advisor suppression", () => {
                 list.handleInput("\r");
               }),
             notify: (message: string) => notices.push(message),
-            select: () => Promise.resolve("✓ Default (Model Default)"),
+            select: (title: string) =>
+              Promise.resolve(
+                title.startsWith("Which Advisor configuration")
+                  ? "Global"
+                  : "✓ Default (Model Default)"
+              ),
           },
         });
         await events.get("session_start")?.({ reason: "startup" }, ctx);

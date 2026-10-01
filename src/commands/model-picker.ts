@@ -21,6 +21,7 @@ export interface AdvisorModelPickerOptions {
   executorEffort: string | undefined;
   selectAdvisor: boolean;
   selectExecutor: boolean;
+  scopeLabel?: string;
 }
 
 export const selectAdvisorModels = async (
@@ -58,7 +59,7 @@ export const selectAdvisorModels = async (
           onCancel: () => done(undefined),
           onSelect: done,
           theme,
-          title: "Select Executor Model",
+          title: `Select Executor Model${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
           tui,
         })
     );
@@ -66,7 +67,7 @@ export const selectAdvisorModels = async (
       return undefined;
     }
     const selectedExecutorEffort = await ctx.ui.select(
-      "Select Executor Reasoning/Thinking Level",
+      `Select Executor Reasoning/Thinking Level${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
       effortChoices(executorEffort)
     );
     if (!selectedExecutorEffort) {
@@ -86,7 +87,7 @@ export const selectAdvisorModels = async (
           onCancel: () => done(undefined),
           onSelect: done,
           theme,
-          title: "Select Advisor Model",
+          title: `Select Advisor Model${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
           tui,
         })
     );
@@ -94,7 +95,7 @@ export const selectAdvisorModels = async (
       return undefined;
     }
     const selectedAdvisorEffort = await ctx.ui.select(
-      "Select Advisor Reasoning/Thinking Level",
+      `Select Advisor Reasoning/Thinking Level${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
       effortChoices(advisorEffort)
     );
     if (!selectedAdvisorEffort) {

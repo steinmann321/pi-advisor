@@ -15,6 +15,7 @@ import {
   advisorUntrackedContentRef,
   contextMaxCharsRef,
 } from "../config/state.ts";
+import type { EffectiveConfigSnapshot } from "../config/storage.ts";
 import { clampGitContextLevel, collectGitContext } from "../git.ts";
 import type { GitContextLevel } from "../git.ts";
 import { readImageFiles } from "../image-attachments.ts";
@@ -40,6 +41,7 @@ const ATTACHMENT_TEXT_MAX_BYTES = 8 * 1024;
 const ATTACHMENTS_TOTAL_MAX_BYTES = 24 * 1024;
 
 export interface ConsultationContextOptions {
+  configuration?: EffectiveConfigSnapshot;
   ctx: ExtensionContext;
   currentInvocationId?: string;
   draft?: string;
@@ -123,7 +125,8 @@ export const assembleConsultationContext = async (
     runAdvisorScout,
     options.currentInvocationId,
     conversationBudget,
-    imageNonce
+    imageNonce,
+    options.configuration
   );
   const preferences = await readProjectPreferences(
     ctx,

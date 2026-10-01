@@ -1,14 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
-  advisorEffortRef,
   advisorRef,
-  executorEffortRef,
   executorRef,
   getPersistedModelRefs,
-  setAdvisorEffortRef,
-  setAdvisorRef,
-  setExecutorEffortRef,
   setExecutorRef,
 } from "../config/state.ts";
 import { loadConfig } from "../config/storage.ts";
@@ -17,13 +12,14 @@ import {
   getExplicitModelError,
   planActivationModels,
 } from "./model-options.ts";
-import { selectAdvisorModels } from "./model-picker.ts";
+import { pendingExecutorModelRef } from "./model-pending.ts";
 import { notify } from "./runtime.ts";
 import type { CommandRuntime } from "./types.ts";
 
 export interface PreparedActivationModels {
   pendingExecutor?: string;
-  pickedModels: boolean;
+  selectAdvisor: boolean;
+  selectExecutor: boolean;
 }
 
 export const loadCommandConfig = (ctx: ExtensionContext) => {
@@ -41,13 +37,13 @@ export const loadCommandConfig = (ctx: ExtensionContext) => {
   }
 };
 
-export const prepareActivationModels = async (
+export const prepareActivationModels = (
   runtime: CommandRuntime,
   ctx: ExtensionContext,
   announce: boolean,
   executorOverride: boolean,
   advisorOverride: boolean
-): Promise<PreparedActivationModels | undefined> => {
+): PreparedActivationModels | undefined => {
   const persisted = getPersistedModelRefs();
   const availableRefs = getAvailableModelRefs(ctx);
   const availableRefSet = availableRefs ? new Set(availableRefs) : undefined;
@@ -75,20 +71,14 @@ export const prepareActivationModels = async (
     ctx,
     executorRef,
     advisorRef,
-    runtime.pendingExecutorModelRef,
+    pendingExecutorModelRef(runtime, ctx),
     persisted,
     executorOverride,
     advisorOverride,
     availableRefSet
   );
   setExecutorRef(plan.pendingExecutor ?? executorRef);
-  if (!(plan.selectExecutor || plan.selectAdvisor)) {
-    return { pendingExecutor: plan.pendingExecutor, pickedModels: false };
-  }
-
-  // Always-on startup cannot open an interactive picker, so it leaves the
-  // flow disabled until the user selects both models with `/advisor`.
-  if (!announce) {
+  if ((plan.selectExecutor || plan.selectAdvisor) && !announce) {
     notify(
       ctx,
       "Advisor models are not configured or available. Run /advisor to choose them.",
@@ -96,23 +86,9 @@ export const prepareActivationModels = async (
     );
     return;
   }
-  const selection = await selectAdvisorModels(ctx, {
-    advisor: advisorOverride || persisted.advisor ? advisorRef : "",
-    advisorEffort: advisorEffortRef,
-    executor:
-      executorOverride || plan.pendingExecutor || persisted.executor
-        ? executorRef
-        : "",
-    executorEffort: executorEffortRef,
+  return {
+    pendingExecutor: plan.pendingExecutor,
     selectAdvisor: plan.selectAdvisor,
     selectExecutor: plan.selectExecutor,
-  });
-  if (!selection) {
-    return;
-  }
-  setAdvisorRef(selection.advisor);
-  setAdvisorEffortRef(selection.advisorEffort);
-  setExecutorRef(selection.executor);
-  setExecutorEffortRef(selection.executorEffort);
-  return { pendingExecutor: plan.pendingExecutor, pickedModels: true };
+  };
 };

@@ -3,12 +3,12 @@ import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import { advisorRedactSecretsRef } from "../config/state.ts";
 import {
-  advisorEffortRef,
-  advisorRedactSecretsRef,
-  advisorRef,
-} from "../config/state.ts";
-import { loadConfig } from "../config/storage.ts";
+  effectiveModelSourceDescription,
+  getEffectiveConfigSnapshot,
+  loadConfig,
+} from "../config/storage.ts";
 import { escapeRepositoryText } from "../git.ts";
 import type { GitContextLevel } from "../git.ts";
 import { collectTextStream, resolveConfiguredModel } from "../model-stream.ts";
@@ -62,6 +62,7 @@ const collectAdvisorResponse = async (
 ) => {
   const { ctx, question, signal, systemPrompt } = options;
   loadConfig(ctx);
+  const configuration = getEffectiveConfigSnapshot();
   if (sameModelAdvisorDisabled(ctx)) {
     throw new Error(sameModelAdvisorNotice);
   }
@@ -69,9 +70,15 @@ const collectAdvisorResponse = async (
   if (accessReason) {
     throw new Error(accessReason);
   }
-  const resolved = await resolveConfiguredModel(ctx, advisorRef, "Advisor");
+  const resolved = await resolveConfiguredModel(
+    ctx,
+    configuration.advisor,
+    "Advisor",
+    effectiveModelSourceDescription(configuration.advisorSource)
+  );
   const context = await assembleConsultationContext({
     ...options,
+    configuration,
     supportsImages: resolved.model.input.includes("image"),
   });
 
@@ -118,7 +125,7 @@ const collectAdvisorResponse = async (
   const streamed = await collectTextStream(resolved, {
     messages,
     onChunk: options.onChunk,
-    reasoning: advisorEffortRef,
+    reasoning: configuration.advisorEffort,
     signal,
     systemPrompt,
   });
@@ -139,7 +146,7 @@ const collectAdvisorResponse = async (
     imageOmissions: context.imageOmissions || undefined,
     imagePartsSeen: context.imagePartsSeen || undefined,
     markdown,
-    model: advisorRef,
+    model: configuration.advisor,
     preferenceBytes: context.preferences?.bytes,
     thinkingText: streamed.thinking,
     trackedBytes:

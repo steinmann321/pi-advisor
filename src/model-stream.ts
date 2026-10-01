@@ -20,23 +20,45 @@ export interface ResolvedConfiguredModel {
 export const resolveConfiguredModel = async (
   ctx: ExtensionContext,
   ref: string | undefined,
-  label: string
+  label: string,
+  provenance?: string
 ): Promise<ResolvedConfiguredModel> => {
+  const withProvenance = (message: string) =>
+    provenance ? `${message}. ${provenance}` : message;
   if (!ref) {
-    throw new Error(`${label} model not configured`);
+    throw new Error(withProvenance(`${label} model not configured`));
   }
   const [provider, modelId] = splitRef(ref);
   const lookup: [string, string] = [provider, modelId];
   const model = ctx.modelRegistry.find(...lookup);
   if (!model) {
-    throw new Error(`${label} model not found: ${ref}`);
+    throw new Error(withProvenance(`${label} model not found: ${ref}`));
   }
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  let auth: Awaited<ReturnType<typeof ctx.modelRegistry.getApiKeyAndHeaders>>;
+  try {
+    auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  } catch (error) {
+    if (ctx.signal?.aborted) {
+      throw error;
+    }
+    throw new Error(
+      withProvenance(`Could not verify authentication for ${label} ${ref}`),
+      { cause: error }
+    );
+  }
   if (!auth.ok) {
-    throw new Error(auth.error);
+    throw new Error(
+      provenance
+        ? withProvenance(`Authentication unavailable for ${label} ${ref}`)
+        : auth.error
+    );
   }
   if (!auth.apiKey) {
-    throw new Error(`No API key for ${ref}`);
+    throw new Error(
+      withProvenance(
+        provenance ? `No API key for ${label} ${ref}` : `No API key for ${ref}`
+      )
+    );
   }
   return {
     apiKey: auth.apiKey,

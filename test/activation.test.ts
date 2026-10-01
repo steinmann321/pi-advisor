@@ -75,7 +75,12 @@ const typingSelectorUi = (
         selector.handleInput("\r");
       }),
     notify: () => {},
-    select: () => Promise.resolve("✓ Default (Model Default)"),
+    select: (title: string) =>
+      Promise.resolve(
+        title.startsWith("Which Advisor configuration")
+          ? "Global"
+          : "✓ Default (Model Default)"
+      ),
   };
 };
 
@@ -247,7 +252,12 @@ describe("Advisor activation flow", () => {
                 customCalls += 1;
               },
             }),
-            select: () => Promise.resolve("✓ Default (Model Default)"),
+            select: (title: string) =>
+              Promise.resolve(
+                title.startsWith("Which Advisor configuration")
+                  ? "Global"
+                  : "✓ Default (Model Default)"
+              ),
           },
         });
 

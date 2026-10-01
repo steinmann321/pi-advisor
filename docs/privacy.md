@@ -15,7 +15,7 @@ Redaction and output limits reduce accidental disclosure; they are not a data-cl
 - `advisorUntrackedContent` defaults to `false`. When enabled, `includeUntracked` can attach only exact named, repository-relative, untracked regular files. Files are redacted and capped before egress; sibling files remain withheld.
 - Tracked and untracked text attachments share the 8 KiB per-file and 24 KiB aggregate limits. Binary non-image files, symlinks, directories, submodules, traversal paths, and files outside the repository are refused. Current tracked bodies may include unstaged edits.
 - For an image-capable Advisor, selected user messages and full-policy tool results may forward PNG, JPEG, GIF, or WebP pixels (not just their descriptions). Tool `summary` and `exclude` policies withhold result images; conversation and Scout selection limits also apply. Scout sees bounded image markers, never the pixels. Text-only models receive an explicit no-pixels notice.
-- Explicit `includeTrackedFiles` and `includeUntracked` paths with supported image extensions can forward image files under the same tracked one-shot handoff and global file-content consent rules. Images have a separate cap of 4 MiB each, four images and 8 MiB total across history and files. Mismatched MIME/format, unsupported formats (including SVG), invalid data and oversized images are withheld. When pixels are unavailable, the Advisor is told not to claim visual review.
+- Explicit `includeTrackedFiles` and `includeUntracked` paths with supported image extensions can forward image files under same tracked one-shot handoff and effective file-content consent rules. Images have a separate cap of 4 MiB each, four images and 8 MiB total across history and files. Mismatched MIME/format, unsupported formats (including SVG), invalid data and oversized images are withheld. When pixels are unavailable, the Advisor is told not to claim visual review.
 - Credential redaction cannot inspect or scrub pixels. Do not attach screenshots containing sensitive data unless you intend the Advisor provider to receive it.
 - `advisorGitContextMaxChars` defaults to `20000`. Repository context may claim its own cap or half of `contextMaxChars`, whichever is smaller, so it cannot crowd out the conversation.
 - The Executor may pass `gitContext` to `ask_advisor` as `none`, `summary`, or `full`. `advisorGitContext` is the ceiling. A larger request is narrowed to the configured level, and the Advisor is told that a fuller view was withheld.
@@ -33,13 +33,15 @@ Redaction and output limits reduce accidental disclosure; they are not a data-cl
   - `exclude` omits both call details and output.
 - Tools not listed in `advisorToolPolicies`, including custom and newly added tools, use `full` for backward compatibility.
 
-## Project preferences
+## Project profiles and preferences
+
+Project profiles are user-owned sparse overrides in Pi-agent `advisor.json`, keyed by canonical absolute project path. They require Pi Project Trust to apply, but trust grants neither disclosure nor logging consent. Every effective disclosure and consent setting may come from selected profile or global default; profiles do not store credentials, OAuth state, or API keys. Repository `.pi/advisor.json` remains ignored and is never written, trusted or not.
 
 In a trusted project, `.pi/advisor-preferences.md` may provide a short local brief. It is never written by pi-advisor, is treated as lower-priority untrusted text, and is redacted and capped before egress. Symlinks, unreadable files, and paths outside the project are ignored.
 
 ## Experimental Advisor Scout
 
-`advisorScoutEnabled` defaults to `false`. When enabled, Scout sends a bounded manifest of Advisor-eligible conversation and tool history to the configured Executor model and provider before every Advisor invocation.
+`advisorScoutEnabled` defaults to `false`. When enabled, Scout sends a bounded manifest of Advisor-eligible conversation and tool history to effective Executor model and provider before every Advisor invocation. A selected profile's trust, validation, model, or authentication failure prevents Advisor/Scout provider calls; it never falls back to global model.
 
 The same tool disclosure policies, tool-result limits, and optional secret redaction run before Scout sees historical content. Image content is represented by non-pixel markers for selection; image bytes never reach Scout. Advisor image pixels are bound to selected evidence groups, not to markers repeated in Scout's synthesis. Tool-call and result messages are grouped atomically. Incomplete historical fragments are omitted rather than sent as orphan evidence. Required current-request context cannot be partially truncated to force a Scout call.
 
@@ -51,7 +53,7 @@ The Scout call creates separate provider usage and cost. Its metrics are local a
 
 ## Outcome logging
 
-`advisorOutcomeLogging` defaults to `false` and is global-only: a project config cannot enable it.
+`advisorOutcomeLogging` defaults to `false` and can be an effective global or trusted-project setting. Project profiles do not create another log or change ownership.
 
 When enabled, `~/.pi/agent/advisor-outcomes.jsonl` stores bounded, rotating JSONL records containing only a version, timestamp, salted truncated advice digest, trigger, adoption, and validation status. It stores no prompt, advice, paths, tool output, repository data, session ID, or advice ID.
 

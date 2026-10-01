@@ -1,13 +1,14 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { isMarkedSubagent } from "../child-session.ts";
+import { alwaysOnRef, executorRef } from "../config/state.ts";
 import {
-  alwaysOnRef,
-  executorRef,
-  getPersistedModelRefs,
-  setExecutorRef,
-} from "../config/state.ts";
-import { loadConfig, saveConfig } from "../config/storage.ts";
+  getEffectiveProjectProfile,
+  loadConfig,
+  updateGlobalConfigValues,
+  updateProjectConfigValues,
+} from "../config/storage.ts";
+import { setPendingExecutorModelRef } from "./model-pending.ts";
 import { notify } from "./runtime.ts";
 import type { CommandRuntime } from "./types.ts";
 
@@ -22,7 +23,7 @@ export const registerCommandLifecycle = (
   activateAdvisor: ActivateAdvisor
 ) => {
   runtime.pi.on("session_start", async (_event, ctx) => {
-    runtime.pendingExecutorModelRef = undefined;
+    setPendingExecutorModelRef(runtime, ctx, undefined);
     runtime.resetSameModelNotice();
     // A malformed advisor.json or a provider auth failure must not reject a
     // lifecycle handler and break session startup.
@@ -54,22 +55,35 @@ export const registerCommandLifecycle = (
       return;
     }
     const selected = `${event.model.provider}/${event.model.id}`;
+    try {
+      loadConfig(ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notify(ctx, `Advisor model synchronization failed: ${message}`, "error");
+      return;
+    }
     if (!runtime.flowEnabled()) {
       // Defer persistence until `/advisor` succeeds. This keeps ordinary model
       // selection global defaults untouched when the flow is not enabled.
-      runtime.pendingExecutorModelRef = selected;
+      setPendingExecutorModelRef(runtime, ctx, selected);
       return;
     }
-    runtime.pendingExecutorModelRef = undefined;
+    setPendingExecutorModelRef(runtime, ctx, undefined);
     if (selected === executorRef) {
       return;
     }
-    const persisted = getPersistedModelRefs();
-    setExecutorRef(selected);
-    saveConfig(ctx, {
-      persistAdvisor: Boolean(persisted.advisor),
-      persistExecutor: true,
-    });
+    try {
+      const profile = getEffectiveProjectProfile(ctx);
+      if (profile) {
+        updateProjectConfigValues(ctx, profile.path, { executor: selected });
+      } else {
+        updateGlobalConfigValues(ctx, { executor: selected });
+      }
+      loadConfig(ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notify(ctx, `Advisor model synchronization failed: ${message}`, "error");
+    }
   });
 
   runtime.pi.on("session_shutdown", (_event, ctx) => {
