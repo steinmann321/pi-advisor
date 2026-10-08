@@ -36,7 +36,7 @@ Deliver one consistent effective profile across every Advisor path, with visible
 - [x] Verify stale effective state is cleared after trust loss, context switch, or selected-profile failure; unrelated invalid profiles remain isolated. **Note:** Verified by `test/profile-runtime-safety.test.ts` and `test/config-project-profiles.test.ts`.
 - [x] Update README, configuration, and privacy documentation for user-level path profiles, both scopes, trust prerequisite, reset/removal, all-field project eligibility, Scout/outcome-logging scope, and repository-local configuration prohibition.
 - [x] Add delivered behavior to `CHANGELOG.md` only after implementation is complete.
-- [ ] (manual testing required) Perform reloaded-TUI verification against existing Advisor rendering for call, streaming, response, error, unavailable consultation, tool block, and session block states. **Note:** Reloaded `dist/index.js` in Pi TUI and verified Global / For this project scope selector and user-level storage copy. Call/stream/response/error/block states remain.
+- [ ] (manual testing required) Perform reloaded-TUI verification against existing Advisor rendering for call, streaming, response, error, unavailable consultation, tool block, and session block states. **Note:** Reloaded `dist/index.js` TUI smoke verified inline scope headers and Tab transitions for model and settings flows; Advisor call/stream/response/error/block states remain.
 
 ## Verification
 

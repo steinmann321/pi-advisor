@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { SearchableModelSelector } from "../ui/model-selector.ts";
+import type { ScopeMode } from "../ui/scope-toggle.ts";
 import {
   effortChoices,
   getAvailableModelRefs,
@@ -12,6 +13,18 @@ export interface AdvisorModelSelection {
   advisorEffort: string | undefined;
   executor: string;
   executorEffort: string | undefined;
+  scope?: AdvisorModelPickerScopeState;
+}
+
+export interface AdvisorModelPickerScopeState {
+  advisor: string | undefined;
+  advisorEffort: string | undefined;
+  executor: string | undefined;
+  executorEffort: string | undefined;
+  kind: "global" | "project";
+  label: string;
+  mode: ScopeMode;
+  target?: string;
 }
 
 export interface AdvisorModelPickerOptions {
@@ -21,7 +34,12 @@ export interface AdvisorModelPickerOptions {
   executorEffort: string | undefined;
   selectAdvisor: boolean;
   selectExecutor: boolean;
+  scope?: AdvisorModelPickerScopeState;
   scopeLabel?: string;
+  scopeProjectPath?: string;
+  onScopeToggle?: (
+    current: AdvisorModelPickerScopeState
+  ) => AdvisorModelPickerScopeState | undefined;
 }
 
 export const selectAdvisorModels = async (
@@ -47,7 +65,33 @@ export const selectAdvisorModels = async (
         )
     ),
   ];
-  let { advisor, advisorEffort, executor, executorEffort } = options;
+  let { advisor, advisorEffort, executor, executorEffort, scope } = options;
+  const updateScope = (model: "advisor" | "executor") => {
+    if (!scope || !options.onScopeToggle) {
+      return undefined;
+    }
+    const next = options.onScopeToggle(scope);
+    if (!next) {
+      return undefined;
+    }
+    const {
+      advisor: nextAdvisor,
+      advisorEffort: nextAdvisorEffort,
+      executor: nextExecutor,
+      executorEffort: nextExecutorEffort,
+      mode,
+    } = next;
+    scope = next;
+    advisor = nextAdvisor;
+    advisorEffort = nextAdvisorEffort;
+    executor = nextExecutor;
+    executorEffort = nextExecutorEffort;
+    return {
+      currentOption: model === "executor" ? nextExecutor : nextAdvisor,
+      mode,
+    };
+  };
+  const scopeLabel = () => scope?.label ?? options.scopeLabel ?? "";
 
   if (options.selectExecutor) {
     const selectedExecutor = await ctx.ui.custom<string | undefined>(
@@ -57,9 +101,12 @@ export const selectAdvisorModels = async (
           currentOption: executor || undefined,
           keybindings,
           onCancel: () => done(undefined),
+          onScopeToggle: () => updateScope("executor"),
           onSelect: done,
+          scopeMode: scope?.mode,
+          scopeProjectPath: options.scopeProjectPath,
           theme,
-          title: `Select Executor Model${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
+          title: "Select Executor Model",
           tui,
         })
     );
@@ -67,7 +114,7 @@ export const selectAdvisorModels = async (
       return undefined;
     }
     const selectedExecutorEffort = await ctx.ui.select(
-      `Select Executor Reasoning/Thinking Level${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
+      `Select Executor Reasoning/Thinking Level${scopeLabel() ? ` · ${scopeLabel()}` : ""}`,
       effortChoices(executorEffort)
     );
     if (!selectedExecutorEffort) {
@@ -85,9 +132,12 @@ export const selectAdvisorModels = async (
           currentOption: advisor || undefined,
           keybindings,
           onCancel: () => done(undefined),
+          onScopeToggle: () => updateScope("advisor"),
           onSelect: done,
+          scopeMode: scope?.mode,
+          scopeProjectPath: options.scopeProjectPath,
           theme,
-          title: `Select Advisor Model${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
+          title: "Select Advisor Model",
           tui,
         })
     );
@@ -95,7 +145,7 @@ export const selectAdvisorModels = async (
       return undefined;
     }
     const selectedAdvisorEffort = await ctx.ui.select(
-      `Select Advisor Reasoning/Thinking Level${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
+      `Select Advisor Reasoning/Thinking Level${scopeLabel() ? ` · ${scopeLabel()}` : ""}`,
       effortChoices(advisorEffort)
     );
     if (!selectedAdvisorEffort) {
@@ -108,5 +158,5 @@ export const selectAdvisorModels = async (
   if (!(advisor && executor)) {
     return undefined;
   }
-  return { advisor, advisorEffort, executor, executorEffort };
+  return { advisor, advisorEffort, executor, executorEffort, scope };
 };

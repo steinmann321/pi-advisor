@@ -261,9 +261,8 @@ describe("Scoped Advisor settings", () => {
       theme: selectorTheme,
       tui: { requestRender: () => {} },
     });
-    expect(plainScreen(selector)).toContain(
-      "Scope: For this project · /project"
-    );
+    expect(plainScreen(selector)).toContain("Scope: all | scoped (/project)");
+    expect(plainScreen(selector)).toContain("Tab: scope (all/scoped)");
     focusSettingsRow(selector, "Collapse long responses");
     expect(plainScreen(selector)).toContain("Project override.");
     selector.handleInput("\u007F");
@@ -271,6 +270,86 @@ describe("Scoped Advisor settings", () => {
     focusSettingsRow(selector, "Plan gate");
     selector.handleInput("\u007F");
     expect(resets).toBe(1);
+  });
+
+  test("Tab switches settings scope without saving during reload", () => {
+    let toggles = 0;
+    let saves = 0;
+    const selector = new AdvisorSettingsSelector({
+      effortLevels: ["Default (Model Default)", "high"],
+      initial: settings(),
+      onCancel: () => {},
+      onScopeToggle: (current) => {
+        toggles += 1;
+        return current?.kind === "project"
+          ? { scope: { kind: "global" }, settings: settings() }
+          : {
+              scope: {
+                kind: "project",
+                overrideKeys: [],
+                profileExists: true,
+                target: "/project",
+              },
+              settings: { ...settings(), collapseResponses: false },
+            };
+      },
+      onSettingChange: () => {
+        saves += 1;
+        return settings();
+      },
+      presets: [{ description: "none", label: "0", value: 0 }],
+      scope: { kind: "global" },
+      scopeProjectPath: "/project",
+      theme: selectorTheme,
+      tui: { requestRender: () => {} },
+    });
+
+    for (const character of "collapse") {
+      selector.handleInput(character);
+    }
+    expect(plainScreen(selector)).toContain("collapse");
+    selector.handleInput("\t");
+    expect(plainScreen(selector)).toContain("collapse");
+    selector.handleInput("\t");
+    expect(plainScreen(selector)).toContain("collapse");
+    expect(toggles).toBe(2);
+    expect(saves).toBe(0);
+  });
+
+  test("cancelling in project scope after Tab creates no profile", async () => {
+    await withAgentDir(
+      { advisorCollapseResponses: false },
+      async (agentDir) => {
+        const before = readConfig(agentDir);
+        const project = join(agentDir, "trusted-project");
+        mkdirSync(project);
+        const commands = new Map<string, any>();
+        registerCommands(mockPi({ commands }));
+        const ctx = asExtensionContext({
+          cwd: project,
+          hasUI: true,
+          isProjectTrusted: () => true,
+          ui: {
+            custom: async (factory: any) => {
+              const selector = factory(
+                { requestRender: () => {} },
+                selectorTheme,
+                { matches: () => false },
+                () => {}
+              );
+              selector.handleInput("\t");
+              selector.handleInput("\u001B");
+            },
+            notify: () => {},
+            select: async () => undefined,
+          },
+        });
+
+        await commands.get("advisor-settings").handler("", ctx);
+
+        expect(readConfig(agentDir)).toEqual(before);
+      }
+    );
   });
 
   test("profile removal waits for explicit confirmation", () => {
@@ -330,10 +409,10 @@ describe("Scoped Advisor settings", () => {
     );
   });
 
-  test("scope picker keeps global editing available when project trust is absent", async () => {
+  test("scope toggle leaves global editing available when project trust is absent", async () => {
     await withAgentDir({}, async (agentDir) => {
       const commands = new Map<string, any>();
-      const selections: { options: string[]; title: string }[] = [];
+      const notes: string[] = [];
       registerCommands(mockPi({ commands }));
       const ctx = asExtensionContext({
         cwd: join(agentDir, "untrusted"),
@@ -344,23 +423,21 @@ describe("Scoped Advisor settings", () => {
             const selector = factory(
               { requestRender: () => {} },
               selectorTheme,
-              {},
+              { matches: () => false },
               () => {}
             );
-            expect(plainScreen(selector)).toContain("Scope: Global");
+            expect(selector.render(100).join("")).toContain(ctx.cwd);
+            selector.handleInput("\t");
+            selector.handleInput("\u001B");
           },
-          notify: () => {},
-          select: async (title: string, options: string[]) => {
-            selections.push({ options, title });
-            return "Global";
-          },
+          notify: (message: string) => notes.push(message),
+          select: async () => undefined,
         },
       });
       await commands.get("advisor-settings").handler("", ctx);
-      expect(selections).toEqual([
-        expect.objectContaining({ options: ["Global"] }),
-      ]);
-      expect(selections[0]?.title).toContain("Use /trust");
+      expect(notes).toContain(
+        "Project-scoped settings require Pi Project Trust. Use /trust first."
+      );
       expect(readConfig(agentDir)).toEqual({});
     });
   });

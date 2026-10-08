@@ -7,6 +7,8 @@ import type {
   KeybindingsManager,
 } from "@earendil-works/pi-tui";
 
+import { isScopeToggleKey, renderScopeHeader } from "./scope-toggle.ts";
+import type { ScopeMode } from "./scope-toggle.ts";
 import type { RenderRequester } from "./types.ts";
 
 interface SearchableModelListOptions {
@@ -19,13 +21,21 @@ interface SearchableModelListOptions {
   theme: Theme;
   title: string;
   tui: RenderRequester;
+  scopeMode?: ScopeMode;
+  scopeProjectPath?: string;
+  onScopeToggle?: () => { currentOption?: string; mode: ScopeMode } | undefined;
 }
 
 export class SearchableModelList implements Component, Focusable {
   private readonly tui: RenderRequester;
   private readonly searchInput: Input;
-  private readonly allOptions: string[];
-  private readonly currentOption: string | undefined;
+  private allOptions: string[];
+  private currentOption: string | undefined;
+  private scopeMode: ScopeMode | undefined;
+  private readonly scopeProjectPath: string | undefined;
+  private readonly onScopeToggle:
+    | (() => { currentOption?: string; mode: ScopeMode } | undefined)
+    | undefined;
   private readonly multiSelect: boolean;
   private readonly selected = new Set<string>();
   private filteredOptions: string[];
@@ -49,6 +59,9 @@ export class SearchableModelList implements Component, Focusable {
     this.multiSelect = options.multiSelect;
     this.tui = options.tui;
     this.title = options.title;
+    this.scopeMode = options.scopeMode;
+    this.scopeProjectPath = options.scopeProjectPath;
+    this.onScopeToggle = options.onScopeToggle;
     const [requestedCurrentOption] = options.currentOptions;
     this.currentOption =
       !this.multiSelect &&
@@ -92,6 +105,16 @@ export class SearchableModelList implements Component, Focusable {
   render(width: number): string[] {
     const lines: string[] = [this.theme.fg("border", "─".repeat(width))];
     lines.push(`  ${this.theme.fg("accent", this.theme.bold(this.title))}`);
+    if (this.scopeMode && this.scopeProjectPath) {
+      lines.push(
+        ...renderScopeHeader(
+          this.theme,
+          width,
+          this.scopeMode,
+          this.scopeProjectPath
+        )
+      );
+    }
     const inputLines = this.searchInput.render(Math.max(1, width - 10));
     lines.push(
       `  ${this.theme.fg("accent", "Search: ")}${inputLines[0] || ""}`,
@@ -141,6 +164,26 @@ export class SearchableModelList implements Component, Focusable {
   }
 
   handleInput(keyData: string): void {
+    if (isScopeToggleKey(keyData, this.keybindings) && this.onScopeToggle) {
+      const updated = this.onScopeToggle();
+      if (updated) {
+        this.scopeMode = updated.mode;
+        this.currentOption =
+          updated.currentOption &&
+          this.allOptions.includes(updated.currentOption)
+            ? updated.currentOption
+            : undefined;
+        this.allOptions = this.currentOption
+          ? [
+              this.currentOption,
+              ...this.allOptions.filter((item) => item !== this.currentOption),
+            ]
+          : this.allOptions;
+        this.selectedIndex = 0;
+        this.tui.requestRender();
+      }
+      return;
+    }
     if (this.matchesAction(keyData, "tui.select.up", "\u001B[A")) {
       this.moveSelection(-1);
       return;

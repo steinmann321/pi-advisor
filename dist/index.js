@@ -1088,9 +1088,6 @@ var applyProjectConfig = (config) => {
 };
 
 // src/config/storage.ts
-var configPaths = (_ctx) => [
-  join(getAgentDir(), "advisor.json")
-];
 var effectiveModelSourceDescription = (source) => {
   if (source.kind === "project") {
     return `Source: selected project profile at ${source.path}.`;
@@ -4796,13 +4793,31 @@ class ModelSelectorAdapter {
 }
 
 // src/ui/searchable-model-list.ts
-import { fuzzyFilter, Input, truncateToWidth as truncateToWidth2 } from "@earendil-works/pi-tui";
+import { fuzzyFilter, Input, truncateToWidth as truncateToWidth3 } from "@earendil-works/pi-tui";
 
+// src/ui/scope-toggle.ts
+import { truncateToWidth as truncateToWidth2, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+var isScopeToggleKey = (keyData, keybindings) => keyData === "\t" || keybindings?.matches(keyData, "tui.input.tab") === true;
+var renderScopeHeader = (theme, width, mode, projectPath) => {
+  const all = mode === "all" ? theme.fg("accent", "all") : theme.fg("muted", "all");
+  const scopedLabel = `scoped (${projectPath})`;
+  const scoped = mode === "scoped" ? theme.fg("accent", scopedLabel) : theme.fg("muted", scopedLabel);
+  const scopeLine = `  ${theme.fg("muted", "Scope: ")}${all}${theme.fg("muted", " | ")}${scoped}`;
+  return [
+    ...wrapTextWithAnsi(scopeLine, Math.max(1, width)),
+    truncateToWidth2(`  ${theme.fg("dim", "Tab: scope (all/scoped) · all = global settings")}`, width)
+  ];
+};
+
+// src/ui/searchable-model-list.ts
 class SearchableModelList {
   tui;
   searchInput;
   allOptions;
   currentOption;
+  scopeMode;
+  scopeProjectPath;
+  onScopeToggle;
   multiSelect;
   selected = new Set;
   filteredOptions;
@@ -4824,6 +4839,9 @@ class SearchableModelList {
     this.multiSelect = options.multiSelect;
     this.tui = options.tui;
     this.title = options.title;
+    this.scopeMode = options.scopeMode;
+    this.scopeProjectPath = options.scopeProjectPath;
+    this.onScopeToggle = options.onScopeToggle;
     const [requestedCurrentOption] = options.currentOptions;
     this.currentOption = !this.multiSelect && requestedCurrentOption && options.allOptions.includes(requestedCurrentOption) ? requestedCurrentOption : undefined;
     let allOptions;
@@ -4858,6 +4876,9 @@ class SearchableModelList {
   render(width) {
     const lines = [this.theme.fg("border", "─".repeat(width))];
     lines.push(`  ${this.theme.fg("accent", this.theme.bold(this.title))}`);
+    if (this.scopeMode && this.scopeProjectPath) {
+      lines.push(...renderScopeHeader(this.theme, width, this.scopeMode, this.scopeProjectPath));
+    }
     const inputLines = this.searchInput.render(Math.max(1, width - 10));
     lines.push(`  ${this.theme.fg("accent", "Search: ")}${inputLines[0] || ""}`, "");
     const query = this.searchInput.getValue().trim();
@@ -4878,9 +4899,23 @@ class SearchableModelList {
       }
     }
     lines.push("", `  ${this.theme.fg("dim", this.interactionHint())}`, this.theme.fg("border", "─".repeat(width)));
-    return lines.map((line) => truncateToWidth2(line, width));
+    return lines.map((line) => truncateToWidth3(line, width));
   }
   handleInput(keyData) {
+    if (isScopeToggleKey(keyData, this.keybindings) && this.onScopeToggle) {
+      const updated = this.onScopeToggle();
+      if (updated) {
+        this.scopeMode = updated.mode;
+        this.currentOption = updated.currentOption && this.allOptions.includes(updated.currentOption) ? updated.currentOption : undefined;
+        this.allOptions = this.currentOption ? [
+          this.currentOption,
+          ...this.allOptions.filter((item) => item !== this.currentOption)
+        ] : this.allOptions;
+        this.selectedIndex = 0;
+        this.tui.requestRender();
+      }
+      return;
+    }
     if (this.matchesAction(keyData, "tui.select.up", "\x1B[A")) {
       this.moveSelection(-1);
       return;
@@ -4982,22 +5017,51 @@ var selectAdvisorModels = async (ctx, options) => {
   const allOptions = [
     ...new Set(refs ?? [options.executor, options.advisor].filter((ref) => Boolean(ref)))
   ];
-  let { advisor, advisorEffort, executor, executorEffort } = options;
+  let { advisor, advisorEffort, executor, executorEffort, scope } = options;
+  const updateScope = (model) => {
+    if (!scope || !options.onScopeToggle) {
+      return;
+    }
+    const next = options.onScopeToggle(scope);
+    if (!next) {
+      return;
+    }
+    const {
+      advisor: nextAdvisor,
+      advisorEffort: nextAdvisorEffort,
+      executor: nextExecutor,
+      executorEffort: nextExecutorEffort,
+      mode
+    } = next;
+    scope = next;
+    advisor = nextAdvisor;
+    advisorEffort = nextAdvisorEffort;
+    executor = nextExecutor;
+    executorEffort = nextExecutorEffort;
+    return {
+      currentOption: model === "executor" ? nextExecutor : nextAdvisor,
+      mode
+    };
+  };
+  const scopeLabel = () => scope?.label ?? options.scopeLabel ?? "";
   if (options.selectExecutor) {
     const selectedExecutor = await ctx.ui.custom((tui, theme, keybindings, done) => new SearchableModelSelector({
       allOptions,
       currentOption: executor || undefined,
       keybindings,
       onCancel: () => done(undefined),
+      onScopeToggle: () => updateScope("executor"),
       onSelect: done,
+      scopeMode: scope?.mode,
+      scopeProjectPath: options.scopeProjectPath,
       theme,
-      title: `Select Executor Model${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
+      title: "Select Executor Model",
       tui
     }));
     if (!selectedExecutor) {
       return;
     }
-    const selectedExecutorEffort = await ctx.ui.select(`Select Executor Reasoning/Thinking Level${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`, effortChoices(executorEffort));
+    const selectedExecutorEffort = await ctx.ui.select(`Select Executor Reasoning/Thinking Level${scopeLabel() ? ` · ${scopeLabel()}` : ""}`, effortChoices(executorEffort));
     if (!selectedExecutorEffort) {
       return;
     }
@@ -5010,15 +5074,18 @@ var selectAdvisorModels = async (ctx, options) => {
       currentOption: advisor || undefined,
       keybindings,
       onCancel: () => done(undefined),
+      onScopeToggle: () => updateScope("advisor"),
       onSelect: done,
+      scopeMode: scope?.mode,
+      scopeProjectPath: options.scopeProjectPath,
       theme,
-      title: `Select Advisor Model${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`,
+      title: "Select Advisor Model",
       tui
     }));
     if (!selectedAdvisor) {
       return;
     }
-    const selectedAdvisorEffort = await ctx.ui.select(`Select Advisor Reasoning/Thinking Level${options.scopeLabel ? ` · ${options.scopeLabel}` : ""}`, effortChoices(advisorEffort));
+    const selectedAdvisorEffort = await ctx.ui.select(`Select Advisor Reasoning/Thinking Level${scopeLabel() ? ` · ${scopeLabel()}` : ""}`, effortChoices(advisorEffort));
     if (!selectedAdvisorEffort) {
       return;
     }
@@ -5028,31 +5095,84 @@ var selectAdvisorModels = async (ctx, options) => {
   if (!(advisor && executor)) {
     return;
   }
-  return { advisor, advisorEffort, executor, executorEffort };
+  return { advisor, advisorEffort, executor, executorEffort, scope };
 };
+
+// src/ui/settings-scope-selector.ts
+import { truncateToWidth as truncateToWidth4 } from "@earendil-works/pi-tui";
+class SettingsScopeSelector {
+  options;
+  mode = "all";
+  _focused = false;
+  constructor(options) {
+    this.options = options;
+  }
+  get focused() {
+    return this._focused;
+  }
+  set focused(value) {
+    this._focused = value;
+  }
+  invalidate() {
+    this.options.tui.requestRender();
+  }
+  render(width) {
+    const border = this.options.theme.fg("border", "─".repeat(width));
+    return [
+      border,
+      this.options.theme.fg("accent", this.options.theme.bold("Advisor configuration")),
+      ...renderScopeHeader(this.options.theme, width, this.mode, this.options.projectPath),
+      this.options.theme.fg("dim", this.options.projectAvailable ? "  Tab: scope · Enter: continue · Esc: cancel" : "  Project scope requires /trust · Enter: continue · Esc: cancel"),
+      this.options.theme.fg("muted", "  all edits global defaults; scoped edits this project and descendants."),
+      this.options.theme.fg("muted", "  Project profiles are stored in user advisor.json, not repository."),
+      border
+    ].map((line) => truncateToWidth4(line, width));
+  }
+  handleInput(keyData) {
+    if (isScopeToggleKey(keyData, this.options.keybindings)) {
+      if (this.options.projectAvailable) {
+        this.mode = this.mode === "all" ? "scoped" : "all";
+        this.options.tui.requestRender();
+      }
+      return;
+    }
+    if (this.options.keybindings.matches(keyData, "tui.select.confirm") || keyData === "\r") {
+      this.options.onSelect(this.mode);
+      return;
+    }
+    if (this.options.keybindings.matches(keyData, "tui.select.cancel") || keyData === "\x1B") {
+      this.options.onCancel();
+    }
+  }
+}
 
 // src/commands/settings-scope-selection.ts
 var selectSettingsScope = async (ctx) => {
   const target = canonicalProjectDirectory(ctx.cwd);
   const eligible = ctx.isProjectTrusted();
-  const destination = configPaths(ctx)[0] ?? "advisor.json";
-  const projectLine = eligible ? `For this project
-${target}
-Overrides global values for this directory and descendants.` : `For this project (unavailable)
-${target}
-Use /trust before creating or editing a project profile.`;
-  const choice = await ctx.ui.select(`Which Advisor configuration do you want to edit?
-
-Global
-Default for projects without an override.
-
-${projectLine}
-
-Project profiles are stored in your user configuration at ${destination}, not in repository.`, eligible ? ["Global", "For this project"] : ["Global"]);
-  if (choice === "Global") {
+  if (!ctx.hasUI || !ctx.ui.custom) {
     return { kind: "global" };
   }
-  return choice === "For this project" ? { kind: "project", target } : undefined;
+  const choice = await ctx.ui.custom((tui, theme, keybindings, done) => new SettingsScopeSelector({
+    keybindings,
+    onCancel: () => done(undefined),
+    onSelect: done,
+    projectAvailable: eligible,
+    projectPath: target,
+    theme,
+    tui
+  }));
+  if (choice === "all") {
+    return { kind: "global" };
+  }
+  if (choice !== "scoped") {
+    return;
+  }
+  if (!ctx.isProjectTrusted()) {
+    ctx.ui.notify("Project scope requires Pi Project Trust. Use /trust first.", "error");
+    return;
+  }
+  return { kind: "project", target };
 };
 
 // src/commands/activation.ts
@@ -5099,7 +5219,6 @@ var choosePersistenceScope = (ctx, requested) => {
   }
   return selectSettingsScope(ctx);
 };
-var scopeLabel = (scope) => scope.kind === "global" ? "Global" : `For this project: ${scope.target}`;
 var activateAdvisor = async (runtime, args, ctx, announce = true) => {
   if (!loadCommandConfig(ctx)) {
     return;
@@ -5127,6 +5246,12 @@ var activateAdvisor = async (runtime, args, ctx, announce = true) => {
   const advisorOverride = hasAdvisorOverride(args);
   const contextOverride = hasContextMaxCharsOverride(args);
   const argumentError = parseArgs(args);
+  const explicitModels = {
+    advisor: advisorRef,
+    advisorEffort: advisorEffortRef,
+    executor: executorRef,
+    executorEffort: executorEffortRef
+  };
   if (argumentError) {
     restoreRefs();
     notify(ctx, argumentError, "error");
@@ -5138,20 +5263,83 @@ var activateAdvisor = async (runtime, args, ctx, announce = true) => {
     return;
   }
   const needsPersistence = executorOverride || advisorOverride || contextOverride || prepared.pendingExecutor !== undefined || prepared.selectAdvisor || prepared.selectExecutor;
-  const scope = needsPersistence ? await choosePersistenceScope(ctx, requestedScope) : undefined;
+  const hasModelPicker = prepared.selectAdvisor || prepared.selectExecutor;
+  let scope;
+  if (needsPersistence) {
+    scope = hasModelPicker && requestedScope === undefined ? { kind: "global" } : await choosePersistenceScope(ctx, requestedScope);
+  }
   if (needsPersistence && !scope) {
     restoreRefs();
     return;
   }
   let pickedModels = false;
   if (prepared.selectAdvisor || prepared.selectExecutor) {
-    const global = scope?.kind === "global" ? readGlobalConfig(ctx) : undefined;
+    if (!scope) {
+      restoreRefs();
+      return;
+    }
+    const scopeState = (target) => {
+      if (target.kind === "global") {
+        const global = readGlobalConfig(ctx);
+        return {
+          advisor: advisorOverride ? explicitModels.advisor : global.advisor,
+          advisorEffort: advisorOverride ? explicitModels.advisorEffort : global.advisorEffort,
+          executor: executorOverride ? explicitModels.executor : prepared.pendingExecutor ?? global.executor,
+          executorEffort: executorOverride ? explicitModels.executorEffort : global.executorEffort,
+          kind: "global",
+          label: "all (global)",
+          mode: "all"
+        };
+      }
+      return {
+        advisor: advisorRef,
+        advisorEffort: advisorEffortRef,
+        executor: executorRef,
+        executorEffort: executorEffortRef,
+        kind: "project",
+        label: `scoped (${target.target})`,
+        mode: "scoped",
+        target: target.target
+      };
+    };
+    const togglePickerScope = (current) => {
+      if (!scope) {
+        return;
+      }
+      if (current.kind === "project") {
+        scope = { kind: "global" };
+        return scopeState(scope);
+      }
+      if (!ctx.isProjectTrusted()) {
+        notify(ctx, "Project-scoped models require Pi Project Trust. Use /trust first.", "error");
+        return;
+      }
+      if (!loadCommandConfig(ctx)) {
+        return;
+      }
+      scope = { kind: "project", target: canonicalProjectDirectory(ctx.cwd) };
+      const projectState = scopeState(scope);
+      if (advisorOverride) {
+        projectState.advisor = explicitModels.advisor;
+        projectState.advisorEffort = explicitModels.advisorEffort;
+      }
+      if (executorOverride) {
+        projectState.executor = explicitModels.executor;
+        projectState.executorEffort = explicitModels.executorEffort;
+      } else if (prepared.pendingExecutor) {
+        projectState.executor = prepared.pendingExecutor;
+      }
+      return projectState;
+    };
+    const initialScope = scopeState(scope);
     const selection = await selectAdvisorModels(ctx, {
-      advisor: advisorOverride || scope?.kind !== "global" ? advisorRef : global?.advisor ?? "",
-      advisorEffort: scope?.kind === "global" ? global?.advisorEffort : advisorEffortRef,
-      executor: executorOverride || prepared.pendingExecutor || scope?.kind !== "global" ? executorRef : global?.executor ?? "",
-      executorEffort: scope?.kind === "global" ? global?.executorEffort : executorEffortRef,
-      scopeLabel: scope ? scopeLabel(scope) : undefined,
+      advisor: initialScope.advisor,
+      advisorEffort: initialScope.advisorEffort,
+      executor: initialScope.executor,
+      executorEffort: initialScope.executorEffort,
+      onScopeToggle: togglePickerScope,
+      scope: initialScope,
+      scopeProjectPath: canonicalProjectDirectory(ctx.cwd),
       selectAdvisor: prepared.selectAdvisor,
       selectExecutor: prepared.selectExecutor
     });
@@ -5163,6 +5351,12 @@ var activateAdvisor = async (runtime, args, ctx, announce = true) => {
     setAdvisorEffortRef(selection.advisorEffort);
     setExecutorRef(selection.executor);
     setExecutorEffortRef(selection.executorEffort);
+    if (selection.scope) {
+      scope = selection.scope.kind === "project" ? {
+        kind: "project",
+        target: selection.scope.target ?? canonicalProjectDirectory(ctx.cwd)
+      } : { kind: "global" };
+    }
     pickedModels = true;
   }
   const { error, executor } = await resolveActivationModels(ctx);
@@ -5317,9 +5511,9 @@ import { Editor, Key, matchesKey } from "@earendil-works/pi-tui";
 
 // src/ui/manual-dialog-render.ts
 import {
-  truncateToWidth as truncateToWidth3,
+  truncateToWidth as truncateToWidth5,
   visibleWidth as visibleWidth2,
-  wrapTextWithAnsi
+  wrapTextWithAnsi as wrapTextWithAnsi2
 } from "@earendil-works/pi-tui";
 var MANUAL_GIT_CONTEXT_COPY = {
   full: { description: "summary plus patch", label: "Full" },
@@ -5344,20 +5538,20 @@ var renderManualAdvisorDialog = (view) => {
   const focusMarker = (target) => focusTarget === target ? theme.fg("accent", "▸ ") : "  ";
   const addLine = (text) => {
     if (renderWidth < 2) {
-      lines.push(truncateToWidth3(text, renderWidth, ""));
+      lines.push(truncateToWidth5(text, renderWidth, ""));
       return;
     }
-    lines.push(`${theme.fg("border", "│")}${" ".repeat(horizontalPadding)}${truncateToWidth3(text, contentWidth, "", true)}${" ".repeat(horizontalPadding)}${theme.fg("border", "│")}`);
+    lines.push(`${theme.fg("border", "│")}${" ".repeat(horizontalPadding)}${truncateToWidth5(text, contentWidth, "", true)}${" ".repeat(horizontalPadding)}${theme.fg("border", "│")}`);
   };
   const addWrapped = (text, color = "text") => {
     const content = theme.fg(color, text);
-    const wrapped = wrapTextWithAnsi(content, Math.max(1, contentWidth - 2));
+    const wrapped = wrapTextWithAnsi2(content, Math.max(1, contentWidth - 2));
     for (const line of wrapped.length > 0 ? wrapped : [""]) {
       addLine(`  ${line}`);
     }
   };
   if (renderWidth >= 2) {
-    const title = truncateToWidth3(" Ask Advisor ", Math.max(0, innerWidth), "", false);
+    const title = truncateToWidth5(" Ask Advisor ", Math.max(0, innerWidth), "", false);
     const titleWidth = visibleWidth2(title);
     const remaining = Math.max(0, innerWidth - titleWidth);
     const left = Math.floor(remaining / 2);
@@ -5404,7 +5598,7 @@ var renderManualAdvisorDialog = (view) => {
   if (renderWidth >= 2) {
     lines.push(theme.fg("border", `╰${"─".repeat(Math.max(0, renderWidth - 2))}╯`));
   }
-  return lines.map((line) => truncateToWidth3(line, renderWidth, ""));
+  return lines.map((line) => truncateToWidth5(line, renderWidth, ""));
 };
 
 // src/ui/manual-dialog.ts
@@ -6461,19 +6655,60 @@ var registerModelCommands = (runtime) => {
       if (!(loadCommandConfig(ctx) && ctx.hasUI)) {
         return;
       }
-      const scope = await selectSettingsScope(ctx);
-      if (!scope) {
-        return;
-      }
-      const project = scope.kind === "project" ? getProjectSettingsProfile(ctx) : undefined;
-      const global = scope.kind === "global" ? readGlobalConfig(ctx) : undefined;
-      const label = scope.kind === "global" ? "Global" : `For this project: ${scope.target}${project?.inheritedProfilePath ? ` · inherits from ${project.inheritedProfilePath}` : ""}`;
+      const projectPath = canonicalProjectDirectory(ctx.cwd);
+      const global = readGlobalConfig(ctx);
+      const globalState = {
+        advisor: global.advisor,
+        advisorEffort: global.advisorEffort,
+        executor: pendingExecutorModelRef(runtime, ctx) ?? global.executor,
+        executorEffort: global.executorEffort,
+        kind: "global",
+        label: "all (global)",
+        mode: "all"
+      };
+      const toggleScope = (current) => {
+        try {
+          if (current.kind === "project") {
+            const config = readGlobalConfig(ctx);
+            return {
+              advisor: config.advisor,
+              advisorEffort: config.advisorEffort,
+              executor: pendingExecutorModelRef(runtime, ctx) ?? config.executor,
+              executorEffort: config.executorEffort,
+              kind: "global",
+              label: "all (global)",
+              mode: "all"
+            };
+          }
+          if (!ctx.isProjectTrusted()) {
+            ctx.ui.notify("Project-scoped models require Pi Project Trust. Use /trust first.", "error");
+            return;
+          }
+          if (!loadCommandConfig(ctx)) {
+            return;
+          }
+          const project = getProjectSettingsProfile(ctx);
+          return {
+            advisor: advisorRef,
+            advisorEffort: advisorEffortRef,
+            executor: executorRef,
+            executorEffort: executorEffortRef,
+            kind: "project",
+            label: `scoped (${projectPath})`,
+            mode: "scoped",
+            target: project.target
+          };
+        } catch (error2) {
+          const message = error2 instanceof Error ? error2.message : String(error2);
+          notify(ctx, `Could not switch model scope: ${message}`, "error");
+          return;
+        }
+      };
       const selection = await selectAdvisorModels(ctx, {
-        advisor: scope.kind === "global" ? global?.advisor ?? "" : advisorRef,
-        advisorEffort: scope.kind === "global" ? global?.advisorEffort : advisorEffortRef,
-        executor: pendingExecutorModelRef(runtime, ctx) ?? (scope.kind === "global" ? global?.executor ?? "" : executorRef),
-        executorEffort: scope.kind === "global" ? global?.executorEffort : executorEffortRef,
-        scopeLabel: label,
+        ...globalState,
+        onScopeToggle: toggleScope,
+        scope: globalState,
+        scopeProjectPath: projectPath,
         selectAdvisor: true,
         selectExecutor: true
       });
@@ -6491,8 +6726,9 @@ var registerModelCommands = (runtime) => {
         executor: selection.executor,
         executorEffort: selection.executorEffort
       };
+      const scope = selection.scope ?? globalState;
       try {
-        const path = scope.kind === "global" ? updateGlobalConfigValues(ctx, values) : updateProjectConfigValues(ctx, scope.target, {
+        const path = scope.kind === "global" ? updateGlobalConfigValues(ctx, values) : updateProjectConfigValues(ctx, scope.target ?? projectPath, {
           ...values,
           advisorEffort: selection.advisorEffort ?? "",
           executorEffort: selection.executorEffort ?? ""
@@ -6500,7 +6736,7 @@ var registerModelCommands = (runtime) => {
         loadCommandConfig(ctx);
         setPendingExecutorModelRef(runtime, ctx, undefined);
         runtime.updateSameModelNotice(ctx);
-        ctx.ui.notify(`Saved Executor + Advisor configurations for ${label} to ${path}`, "info");
+        ctx.ui.notify(`Saved Executor + Advisor configurations for ${scope.label} to ${path}`, "info");
       } catch (saveError) {
         const message = saveError instanceof Error ? saveError.message : String(saveError);
         notify(ctx, `Could not save Advisor models: ${message}`, "error");
@@ -6598,7 +6834,7 @@ import {
   Key as Key5,
   matchesKey as matchesKey5,
   SettingsList,
-  truncateToWidth as truncateToWidth8
+  truncateToWidth as truncateToWidth10
 } from "@earendil-works/pi-tui";
 
 // src/ui/settings-formatting.ts
@@ -6692,7 +6928,7 @@ var rainbowGradient = (text, startedAt) => {
 import { getKeybindings } from "@earendil-works/pi-tui";
 
 // src/ui/jev-setup-submenu.ts
-import { Key as Key2, matchesKey as matchesKey2, truncateToWidth as truncateToWidth5 } from "@earendil-works/pi-tui";
+import { Key as Key2, matchesKey as matchesKey2, truncateToWidth as truncateToWidth7 } from "@earendil-works/pi-tui";
 
 // node_modules/@typesafe-ai/sdk/dist/index.mjs
 var requestIdFrom = (headers) => headers.get("x-typesafe-request-id") ?? undefined;
@@ -7289,7 +7525,7 @@ var parseBody = async (res) => {
 };
 
 // src/ui/masked-input.ts
-import { Input as Input2, truncateToWidth as truncateToWidth4 } from "@earendil-works/pi-tui";
+import { Input as Input2, truncateToWidth as truncateToWidth6 } from "@earendil-works/pi-tui";
 
 class MaskedInput {
   input;
@@ -7326,7 +7562,7 @@ class MaskedInput {
     const { cursor } = this.input;
     const masked = `${"•".repeat(Math.min(cursor, value.length))}█${"•".repeat(Math.max(0, value.length - cursor))}`;
     const placeholder = value.length === 0 && this.options.placeholder ? this.options.placeholder : masked;
-    return [truncateToWidth4(placeholder, Math.max(1, width))];
+    return [truncateToWidth6(placeholder, Math.max(1, width))];
   }
 }
 
@@ -7460,7 +7696,7 @@ class JevSetupSubmenu {
         lines.push(`${prefix}${label}`);
       }
     }
-    return lines.map((line) => truncateToWidth5(line, width));
+    return lines.map((line) => truncateToWidth7(line, width));
   }
   actions() {
     if (!this.credentials) {
@@ -7595,7 +7831,7 @@ class SearchableModelMultiSelector extends ModelSelectorAdapter {
 }
 
 // src/ui/profile-removal-submenu.ts
-import { Key as Key3, matchesKey as matchesKey3, truncateToWidth as truncateToWidth6 } from "@earendil-works/pi-tui";
+import { Key as Key3, matchesKey as matchesKey3, truncateToWidth as truncateToWidth8 } from "@earendil-works/pi-tui";
 
 class ProfileRemovalSubmenu {
   onCancel;
@@ -7627,7 +7863,7 @@ class ProfileRemovalSubmenu {
       this.theme.fg("muted", `  ${this.text}`),
       "",
       this.theme.fg("error", "  Enter: remove profile · Esc: keep profile")
-    ].map((line) => truncateToWidth6(line, width));
+    ].map((line) => truncateToWidth8(line, width));
   }
   handleInput(keyData) {
     if (matchesKey3(keyData, Key3.enter) || keyData === "\r") {
@@ -7747,7 +7983,7 @@ var settingConfigValue = (id, settings) => {
 };
 
 // src/ui/text-setting-submenu.ts
-import { Input as Input3, truncateToWidth as truncateToWidth7 } from "@earendil-works/pi-tui";
+import { Input as Input3, truncateToWidth as truncateToWidth9 } from "@earendil-works/pi-tui";
 
 class TextSettingSubmenu {
   input = new Input3;
@@ -7794,7 +8030,7 @@ class TextSettingSubmenu {
       lines.push(theme.fg("error", `  ${this.error}`));
     }
     lines.push("", theme.fg("dim", "  Enter: apply · Esc: cancel"));
-    return lines.map((line) => truncateToWidth7(line, width));
+    return lines.map((line) => truncateToWidth9(line, width));
   }
   handleInput(keyData) {
     const before = this.input.getValue();
@@ -8127,6 +8363,12 @@ class SettingsListAdapter {
   invalidate() {
     this.list.invalidate();
   }
+  searchQuery() {
+    return this.privateFields().searchInput?.getValue() ?? "";
+  }
+  setSearchQuery(value) {
+    this.privateFields().searchInput?.setValue(value);
+  }
   render(width) {
     return this.list.render(width);
   }
@@ -8361,6 +8603,7 @@ var mutateAdvisorSettings = (settings, id, value, presets) => {
 class AdvisorSettingsSelector {
   options;
   settings;
+  scope;
   presets;
   settingsList;
   simpleModeGradientStartedAt;
@@ -8376,6 +8619,7 @@ class AdvisorSettingsSelector {
   constructor(options) {
     this.options = options;
     this.settings = { ...options.initial };
+    this.scope = options.scope;
     const configuredContext = this.settings.contextMaxChars;
     this.presets = options.presets.some((preset) => preset.value === configuredContext) ? [...options.presets] : [
       ...options.presets,
@@ -8398,26 +8642,25 @@ class AdvisorSettingsSelector {
   }
   render(width) {
     const border = this.options.theme.fg("border", "─".repeat(Math.max(1, width)));
-    const { scope } = this.options;
-    let scopeLines = [];
-    if (scope?.kind === "project") {
-      scopeLines = [
-        this.options.theme.fg("muted", `  Scope: For this project · ${scope.target}`),
+    const { scope } = this;
+    const scopeLines = scope ? [
+      ...renderScopeHeader(this.options.theme, width, scope.kind === "project" ? "scoped" : "all", this.options.scopeProjectPath ?? (scope.kind === "project" ? scope.target : "current project")),
+      ...scope.kind === "project" ? [
         this.options.theme.fg("dim", `  Overrides marked in row detail. Backspace removes selected override.${scope.inheritedProfilePath ? ` Parent profile: ${scope.inheritedProfilePath}` : ""}`)
-      ];
-    } else if (scope) {
-      scopeLines = [
-        this.options.theme.fg("muted", "  Scope: Global · defaults for projects without an override")
-      ];
-    }
+      ] : []
+    ] : [];
     return [
       border,
       ...scopeLines,
       ...this.settingsList.render(width),
       border
-    ].map((line) => truncateToWidth8(line, width));
+    ].map((line) => truncateToWidth10(line, width));
   }
   handleInput(keyData) {
+    if (isScopeToggleKey(keyData, this.options.keybindings) && this.options.onScopeToggle && !this.settingsList.submenuComponent) {
+      this.toggleScope();
+      return;
+    }
     const resetId = matchesKey5(keyData, Key5.backspace) || keyData === "" ? this.settingsList.selectedIdForReset() : undefined;
     if (resetId) {
       this.resetOverride(resetId);
@@ -8426,7 +8669,7 @@ class AdvisorSettingsSelector {
     }
     this.options.tui.requestRender();
   }
-  createSettingsList(selectedId) {
+  createSettingsList(selectedId, searchQuery) {
     const listTheme = getSettingsListTheme();
     const defaultLabel = listTheme.label;
     listTheme.label = (text, selected) => {
@@ -8440,13 +8683,16 @@ class AdvisorSettingsSelector {
       effortLevels: this.options.effortLevels,
       modelWhitelist,
       presets: this.presets,
-      scope: this.options.scope,
+      scope: this.scope,
       settings: this.settings,
       theme: this.options.theme,
       tui: this.options.tui
     });
     const list = new SettingsList(items, 10, listTheme, (id, value) => this.change(id, value), this.options.onCancel, { enableSearch: true });
     const adapter = new SettingsListAdapter(list);
+    if (searchQuery) {
+      adapter.setSearchQuery(searchQuery);
+    }
     if (selectedId) {
       adapter.setSelectedId(items, selectedId);
     }
@@ -8507,8 +8753,28 @@ class AdvisorSettingsSelector {
       this.settingsList = this.createSettingsList(id);
     }
   }
+  toggleScope() {
+    const next = this.options.onScopeToggle?.(this.scope);
+    if (!next) {
+      return;
+    }
+    const wasSimple = this.settings.simpleMode;
+    this.scope = next.scope;
+    this.settings = { ...next.settings };
+    if (wasSimple !== this.settings.simpleMode) {
+      if (this.settings.simpleMode) {
+        this.startSimpleModeGradient();
+      } else {
+        this.stopSimpleModeGradient();
+      }
+    }
+    const searchQuery = this.settingsList.searchQuery();
+    this.settingsList = this.createSettingsList(undefined, searchQuery);
+    this.settingsList.setFocused(this._focused);
+    this.options.tui.requestRender();
+  }
   resetOverride(id) {
-    const { scope } = this.options;
+    const { scope } = this;
     const key = settingConfigKey(id);
     if (scope?.kind !== "project" || !key || !scope.overrideKeys.includes(key)) {
       return;
@@ -8518,7 +8784,7 @@ class AdvisorSettingsSelector {
       return;
     }
     Object.assign(this.settings, settings);
-    this.options.scope = {
+    this.scope = {
       ...scope,
       overrideKeys: scope.overrideKeys.filter((override) => override !== key)
     };
@@ -8586,35 +8852,47 @@ var registerSettingsCommands = (runtime) => {
         notify(ctx, `Advisor command could not load configuration: ${message} Fix advisor.json and retry.`, "error");
         return;
       }
-      const selected = await selectSettingsScope(ctx);
-      if (!selected) {
+      const projectPath = canonicalProjectDirectory(ctx.cwd);
+      let scope = { kind: "global" };
+      let initial;
+      try {
+        initial = getGlobalAdvisorSettings(ctx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Could not load Advisor settings: ${message}`, "error");
         return;
       }
-      let initial;
-      let scope;
-      try {
-        if (selected.kind === "global") {
-          initial = getGlobalAdvisorSettings(ctx);
-          scope = selected;
-        } else {
+      const toggleScope = (current) => {
+        try {
+          if (current?.kind === "project") {
+            const settings2 = getGlobalAdvisorSettings(ctx);
+            scope = { kind: "global" };
+            return { scope, settings: settings2 };
+          }
+          if (!ctx.isProjectTrusted()) {
+            ctx.ui.notify("Project-scoped settings require Pi Project Trust. Use /trust first.", "error");
+            return;
+          }
           if (!loadCommandConfig(ctx)) {
             return;
           }
           const profile = getProjectSettingsProfile(ctx);
-          initial = getAdvisorSettings();
-          scope = {
+          const nextScope = {
             inheritedProfilePath: profile.inheritedProfilePath,
             kind: "project",
             overrideKeys: profile.overrideKeys,
             profileExists: profile.profileExists,
             target: profile.target
           };
+          const settings = getAdvisorSettings();
+          scope = nextScope;
+          return { scope, settings };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(`Could not switch Advisor scope: ${message}`, "error");
+          return;
         }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(`Could not load Advisor settings: ${message}`, "error");
-        return;
-      }
+      };
       await ctx.ui.custom((tui, theme, keybindings, done) => new AdvisorSettingsSelector({
         effortLevels: EFFORT_LEVELS,
         initial,
@@ -8652,6 +8930,7 @@ var registerSettingsCommands = (runtime) => {
             return;
           }
         },
+        onScopeToggle: toggleScope,
         onSettingChange: (id, settings) => {
           try {
             const saved = saveScopedAdvisorSetting(ctx, scope, id, settings);
@@ -8666,6 +8945,7 @@ var registerSettingsCommands = (runtime) => {
         },
         presets: CONTEXT_PRESETS,
         scope,
+        scopeProjectPath: projectPath,
         theme,
         tui
       }));

@@ -3,6 +3,7 @@ import type { KeybindingsManager, TUI } from "@earendil-works/pi-tui";
 
 import type { GateFailureMode } from "../config/types.ts";
 import type { GitContextLevel } from "../git.ts";
+import type { ScopeMode } from "./scope-toggle.ts";
 import type { SettingsEditScope } from "./settings-scope.ts";
 
 export interface RenderRequester {
@@ -19,6 +20,9 @@ export interface SearchableModelSelectorOptions {
   theme: Theme;
   title: string;
   tui: RenderRequester;
+  scopeMode?: ScopeMode;
+  scopeProjectPath?: string;
+  onScopeToggle?: () => { currentOption?: string; mode: ScopeMode } | undefined;
 }
 
 export interface SearchableModelMultiSelectorOptions extends Omit<
@@ -118,6 +122,10 @@ export interface AdvisorSettingsSelectorOptions {
   keybindings?: KeybindingsManager;
   modelRefs?: string[];
   onCancel: () => void;
+  scopeProjectPath?: string;
+  onScopeToggle?: (
+    current: SettingsEditScope | undefined
+  ) => { scope: SettingsEditScope; settings: AdvisorSettings } | undefined;
   onChange?: (settings: AdvisorSettings) => void;
   onRemoveProfile?: () => AdvisorSettings | undefined;
   onResetOverride?: (id: string) => AdvisorSettings | undefined;

@@ -25,8 +25,8 @@ Let users edit every Advisor setting globally or for current trusted project, wh
 
 ## Work
 
-- [x] Add reusable Global / For this project scope selection before `/advisor-settings`, including canonical target path, user-level storage explanation, inherited parent-profile provenance, and disabled project scope with `/trust` guidance when ineligible.
-- [x] Pass selected editing scope through settings loading, mutation, and persistence without flattening inherited values into target profile overrides.
+- [x] Add inline Pi-style `Scope: all | scoped (<canonical target path>)` toggle to `/advisor-settings`; Tab switches save target, global stays available when untrusted, and scoped toggle explains `/trust` requirement.
+- [x] Pass live editing scope through settings loading, mutation, and persistence without flattening inherited values into target profile overrides; switching scope reloads settings without saving.
 - [x] Render project settings with scope, target directory, explicit-override versus inherited provenance, and parent-profile precedence warning where relevant.
 - [x] Support Backspace on a project setting to delete only that explicit override; inherited rows remain unchanged and global/parent data is never modified.
 - [x] Add project-only confirmed whole-profile removal. Confirmation must state resulting profile/global source and possible provider change; removal must not remove a parent entry.
@@ -41,4 +41,4 @@ Let users edit every Advisor setting globally or for current trusted project, wh
 - [x] Backspace restores Global/default inheritance and final reset retains an empty child profile until explicit confirmed removal. **Note:** Verified by selector and persistence assertions in `test/settings-scoped-profiles.test.ts`.
 - [x] Whole-profile removal explains and exposes resulting parent/global provider only after confirmation. **Note:** Verified by `test/settings-scoped-profiles.test.ts` confirmation and target-only removal tests.
 - [ ] (manual testing required) Each setting has automated default, validation, persistence, and UI-navigation coverage for project scope. **Note:** `test/settings-scoped-profiles.test.ts` validates and persists every setting row, including arrays, objects, disclosure, Jev, Scout, and outcome logging; per-control project-scope navigation still needs coverage.
-- [ ] (manual testing required) Reloaded TUI verifies selector, inherited/override rows, reset, confirmation, cancel, trust-error, and save-error states against existing Advisor UI patterns. **Note:** Reloaded Pi TUI verified scope chooser, untrusted guidance, trusted project scope, and removal row; interactive reset, confirmation/cancel, trust-error, and save-error states remain.
+- [ ] (manual testing required) Reloaded TUI verifies inherited/override rows, reset, confirmation, cancel, trust-error, and save-error states against existing Advisor UI patterns. **Note:** Reloaded Pi TUI verified inline all/scoped header, absolute path, Tab transition, and project-only removal row; reset, confirmation/cancel, trust-loss, and save-error interactions remain.

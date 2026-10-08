@@ -60,9 +60,9 @@ Arrows between values express per-setting precedence, not fallback after a confi
 
 ### Explicit editing scope and visible inheritance
 
-- **Decision:** Add `Global` / `For this project` selection before `/advisor-models` and `/advisor-settings`. Keep global editing available everywhere; disable project editing when untrusted with a `/trust` hint. Show scope, target directory, explicit overrides, and inherited values throughout the dialog.
-- **Reason:** Editing destination and effective configuration are distinct. Users must understand that profiles live in user configuration, not the repository.
-- **Trade-offs:** One extra selection step. Opening, cancelling, or merely selecting a scope saves nothing and creates no profile. Editing targets the current canonical directory, never silently an effective parent profile; show the parent's path when relevant and explain child-profile precedence. Global edits leave overrides intact and explain when the current project masks a changed value.
+- **Decision:** Add a Pi-style inline `Scope: all | scoped (<canonical absolute path>)` toggle to `/advisor-models` and `/advisor-settings`; Tab switches save target. `all` means global settings, `scoped` means the current trusted project profile. Keep global editing available everywhere; reject scoped edits when untrusted with a `/trust` hint. Show scope, target directory, explicit overrides, and inherited values throughout the dialog.
+- **Reason:** Editing destination and effective configuration are distinct. The inline header reuses Pi's familiar model-selector convention and removes a separate scope prompt. Users must understand that profiles live in user configuration, not the repository.
+- **Trade-offs:** Toggling scope alone saves nothing and creates no profile. Model list remains unfiltered; scope selects persistence destination, not model availability. Editing targets the current canonical directory, never silently an effective parent profile; show the parent's path when relevant and explain child-profile precedence. Global edits leave overrides intact and explain when the current project masks a changed value.
 
 ### Backspace removes an override
 

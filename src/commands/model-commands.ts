@@ -1,3 +1,4 @@
+import { canonicalProjectDirectory } from "../config/project-profiles.ts";
 import {
   advisorEffortRef,
   advisorRef,
@@ -18,8 +19,8 @@ import {
   setPendingExecutorModelRef,
 } from "./model-pending.ts";
 import { selectAdvisorModels } from "./model-picker.ts";
+import type { AdvisorModelPickerScopeState } from "./model-picker.ts";
 import { notify } from "./runtime.ts";
-import { selectSettingsScope } from "./settings-scope-selection.ts";
 import type { CommandRuntime } from "./types.ts";
 
 export const registerModelCommands = (runtime: CommandRuntime) => {
@@ -37,28 +38,67 @@ export const registerModelCommands = (runtime: CommandRuntime) => {
       if (!(loadCommandConfig(ctx) && ctx.hasUI)) {
         return;
       }
-      const scope = await selectSettingsScope(ctx);
-      if (!scope) {
-        return;
-      }
-      const project =
-        scope.kind === "project" ? getProjectSettingsProfile(ctx) : undefined;
-      const global =
-        scope.kind === "global" ? readGlobalConfig(ctx) : undefined;
-      const label =
-        scope.kind === "global"
-          ? "Global"
-          : `For this project: ${scope.target}${project?.inheritedProfilePath ? ` · inherits from ${project.inheritedProfilePath}` : ""}`;
+      const projectPath = canonicalProjectDirectory(ctx.cwd);
+      const global = readGlobalConfig(ctx);
+      const globalState: AdvisorModelPickerScopeState = {
+        advisor: global.advisor,
+        advisorEffort: global.advisorEffort,
+        executor: pendingExecutorModelRef(runtime, ctx) ?? global.executor,
+        executorEffort: global.executorEffort,
+        kind: "global",
+        label: "all (global)",
+        mode: "all",
+      };
+      const toggleScope = (
+        current: AdvisorModelPickerScopeState
+      ): AdvisorModelPickerScopeState | undefined => {
+        try {
+          if (current.kind === "project") {
+            const config = readGlobalConfig(ctx);
+            return {
+              advisor: config.advisor,
+              advisorEffort: config.advisorEffort,
+              executor:
+                pendingExecutorModelRef(runtime, ctx) ?? config.executor,
+              executorEffort: config.executorEffort,
+              kind: "global",
+              label: "all (global)",
+              mode: "all",
+            };
+          }
+          if (!ctx.isProjectTrusted()) {
+            ctx.ui.notify(
+              "Project-scoped models require Pi Project Trust. Use /trust first.",
+              "error"
+            );
+            return undefined;
+          }
+          if (!loadCommandConfig(ctx)) {
+            return undefined;
+          }
+          const project = getProjectSettingsProfile(ctx);
+          return {
+            advisor: advisorRef,
+            advisorEffort: advisorEffortRef,
+            executor: executorRef,
+            executorEffort: executorEffortRef,
+            kind: "project",
+            label: `scoped (${projectPath})`,
+            mode: "scoped",
+            target: project.target,
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          notify(ctx, `Could not switch model scope: ${message}`, "error");
+          return undefined;
+        }
+      };
       const selection = await selectAdvisorModels(ctx, {
-        advisor: scope.kind === "global" ? (global?.advisor ?? "") : advisorRef,
-        advisorEffort:
-          scope.kind === "global" ? global?.advisorEffort : advisorEffortRef,
-        executor:
-          pendingExecutorModelRef(runtime, ctx) ??
-          (scope.kind === "global" ? (global?.executor ?? "") : executorRef),
-        executorEffort:
-          scope.kind === "global" ? global?.executorEffort : executorEffortRef,
-        scopeLabel: label,
+        ...globalState,
+        onScopeToggle: toggleScope,
+        scope: globalState,
+        scopeProjectPath: projectPath,
         selectAdvisor: true,
         selectExecutor: true,
       });
@@ -81,11 +121,12 @@ export const registerModelCommands = (runtime: CommandRuntime) => {
         executor: selection.executor,
         executorEffort: selection.executorEffort,
       };
+      const scope = selection.scope ?? globalState;
       try {
         const path =
           scope.kind === "global"
             ? updateGlobalConfigValues(ctx, values)
-            : updateProjectConfigValues(ctx, scope.target, {
+            : updateProjectConfigValues(ctx, scope.target ?? projectPath, {
                 ...values,
                 advisorEffort: selection.advisorEffort ?? "",
                 executorEffort: selection.executorEffort ?? "",
@@ -94,7 +135,7 @@ export const registerModelCommands = (runtime: CommandRuntime) => {
         setPendingExecutorModelRef(runtime, ctx, undefined);
         runtime.updateSameModelNotice(ctx);
         ctx.ui.notify(
-          `Saved Executor + Advisor configurations for ${label} to ${path}`,
+          `Saved Executor + Advisor configurations for ${scope.label} to ${path}`,
           "info"
         );
       } catch (saveError) {

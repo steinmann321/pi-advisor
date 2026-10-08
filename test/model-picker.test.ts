@@ -216,6 +216,46 @@ describe("Searchable model selector", () => {
     expect(selected).toEqual(["provider/alpha"]);
   });
 
+  test("switches model save scope with Tab, preserving search and refreshing selection", () => {
+    let toggles = 0;
+    let mode: "all" | "scoped" = "all";
+    const selector = new SearchableModelSelector({
+      allOptions: ["provider/global", "provider/project"],
+      currentOption: "provider/global",
+      keybindings,
+      onCancel: () => {},
+      onScopeToggle: () => {
+        toggles += 1;
+        mode = mode === "all" ? "scoped" : "all";
+        return {
+          currentOption:
+            mode === "scoped" ? "provider/project" : "provider/global",
+          mode,
+        };
+      },
+      onSelect: () => {},
+      scopeMode: "all",
+      scopeProjectPath: "/project",
+      theme,
+      title: "Select Advisor Model",
+      tui: { requestRender: () => {} },
+    });
+
+    for (const character of "project") {
+      selector.handleInput(character);
+    }
+    selector.handleInput("\t");
+    const scopedScreen = selector.render(100).join("\n");
+    selector.handleInput("\t");
+    const globalScreen = selector.render(100).join("\n");
+
+    expect(toggles).toBe(2);
+    expect(scopedScreen).toContain("Search: > project");
+    expect(scopedScreen).toContain("✓ provider/project");
+    expect(globalScreen).toContain("Search: > project");
+    expect(globalScreen).toContain("Scope: all | scoped (/project)");
+  });
+
   test("keeps the current model when Enter is pressed immediately", () => {
     let selected: string | undefined;
     const selector = new SearchableModelSelector({

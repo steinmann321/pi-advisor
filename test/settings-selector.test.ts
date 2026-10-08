@@ -35,7 +35,7 @@ const custom = async (factory: any) =>
     const selector = factory(
       { requestRender: () => {} },
       selectorTheme,
-      {},
+      { matches: () => false },
       resolve
     );
     focusSettingsRow(selector, "Experimental Advisor Scout");
@@ -49,7 +49,7 @@ const reopened = async (factory: any) =>
     const selector = factory(
       { requestRender: () => {} },
       selectorTheme,
-      {},
+      { matches: () => false },
       resolve
     );
     const initialScreen = stripTerminalSequences(

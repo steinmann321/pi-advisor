@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { canonicalProjectDirectory } from "../config/project-profiles.ts";
-import { configPaths } from "../config/storage.ts";
+import { SettingsScopeSelector } from "../ui/settings-scope-selector.ts";
 
 export type SelectedSettingsScope =
   | { kind: "global" }
@@ -12,18 +12,33 @@ export const selectSettingsScope = async (
 ): Promise<SelectedSettingsScope | undefined> => {
   const target = canonicalProjectDirectory(ctx.cwd);
   const eligible = ctx.isProjectTrusted();
-  const destination = configPaths(ctx)[0] ?? "advisor.json";
-  const projectLine = eligible
-    ? `For this project\n${target}\nOverrides global values for this directory and descendants.`
-    : `For this project (unavailable)\n${target}\nUse /trust before creating or editing a project profile.`;
-  const choice = await ctx.ui.select(
-    `Which Advisor configuration do you want to edit?\n\nGlobal\nDefault for projects without an override.\n\n${projectLine}\n\nProject profiles are stored in your user configuration at ${destination}, not in repository.`,
-    eligible ? ["Global", "For this project"] : ["Global"]
-  );
-  if (choice === "Global") {
+  if (!ctx.hasUI || !ctx.ui.custom) {
     return { kind: "global" };
   }
-  return choice === "For this project"
-    ? { kind: "project", target }
-    : undefined;
+  const choice = await ctx.ui.custom<"all" | "scoped" | undefined>(
+    (tui, theme, keybindings, done) =>
+      new SettingsScopeSelector({
+        keybindings,
+        onCancel: () => done(undefined),
+        onSelect: done,
+        projectAvailable: eligible,
+        projectPath: target,
+        theme,
+        tui,
+      })
+  );
+  if (choice === "all") {
+    return { kind: "global" };
+  }
+  if (choice !== "scoped") {
+    return undefined;
+  }
+  if (!ctx.isProjectTrusted()) {
+    ctx.ui.notify(
+      "Project scope requires Pi Project Trust. Use /trust first.",
+      "error"
+    );
+    return undefined;
+  }
+  return { kind: "project", target };
 };

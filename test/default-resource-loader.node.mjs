@@ -48,7 +48,12 @@ const runSettingsCommand = async (handler, context, change) => {
     custom: async (factory) =>
       new Promise((resolve) => {
         const done = () => resolve();
-        const selector = factory({ requestRender: noop }, fakeTheme, {}, done);
+        const selector = factory(
+          { requestRender: noop },
+          fakeTheme,
+          { matches: () => false },
+          done
+        );
         if (change) {
           // Context starts at 25k: one right-arrow selects 100k. Three down
           // arrows select Advisor reasoning, then right-arrow selects "off".

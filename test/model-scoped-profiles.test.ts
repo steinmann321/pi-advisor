@@ -32,7 +32,9 @@ const modelRegistry = (authenticated = true) => ({
 
 const modelPickerUi = (
   scope: "Global" | "For this project",
-  notes: string[] = []
+  notes: string[] = [],
+  tabCount = scope === "For this project" ? 1 : 0,
+  onAdvisorEffort?: () => void
 ) => {
   let customCalls = 0;
   return {
@@ -48,6 +50,11 @@ const modelPickerUi = (
           resolve
         );
         selector.render(100);
+        if (customCalls === 0) {
+          for (let index = 0; index < tabCount; index += 1) {
+            selector.handleInput("\t");
+          }
+        }
         const search =
           customCalls === 0 ? "project/executor" : "project/advisor";
         for (const character of search) {
@@ -57,10 +64,12 @@ const modelPickerUi = (
         selector.handleInput("\r");
       }),
     notify: (message: string) => notes.push(message),
-    select: (title: string, choices: string[]) =>
-      Promise.resolve(
-        title.startsWith("Which Advisor configuration") ? scope : choices[0]
-      ),
+    select: (title: string, choices: string[]) => {
+      if (title.startsWith("Select Advisor Reasoning")) {
+        onAdvisorEffort?.();
+      }
+      return Promise.resolve(choices[0]);
+    },
   };
 };
 
@@ -115,6 +124,143 @@ describe("Scoped Advisor models", () => {
         } finally {
           rmSync(project, { force: true, recursive: true });
           rmSync(sibling, { force: true, recursive: true });
+        }
+      }
+    );
+  });
+
+  test("does not persist when picker is cancelled after changing scope", async () => {
+    await withAgentDir(
+      { advisor: "global/advisor", executor: "global/executor" },
+      async (agentDir) => {
+        const before = saved(agentDir);
+        const project = mkdtempSync(join(tmpdir(), "pi-advisor-project-"));
+        try {
+          const commands = new Map<string, any>();
+          registerCommands(mockPi({ commands }));
+          const ctx = asExtensionContext({
+            cwd: project,
+            hasUI: true,
+            isProjectTrusted: () => true,
+            modelRegistry: modelRegistry(),
+            ui: {
+              custom: (factory: any) =>
+                new Promise((resolve) => {
+                  const selector = factory(
+                    { requestRender: () => {} },
+                    {
+                      bold: (value: string) => value,
+                      fg: (_color: string, value: string) => value,
+                    },
+                    { matches: () => false },
+                    resolve
+                  );
+                  selector.handleInput("\t");
+                  selector.handleInput("\u001B");
+                }),
+              notify: () => {},
+              select: async (_title: string, choices: string[]) => choices[0],
+            },
+          });
+
+          await commands.get("advisor-models").handler("", ctx);
+
+          expect(saved(agentDir)).toEqual(before);
+        } finally {
+          rmSync(project, { force: true, recursive: true });
+        }
+      }
+    );
+  });
+
+  test("returns to global target without stale scoped writes after repeated toggles", async () => {
+    await withAgentDir(
+      { advisor: "global/advisor", executor: "global/executor" },
+      async (agentDir) => {
+        const notes: string[] = [];
+        const project = mkdtempSync(join(tmpdir(), "pi-advisor-project-"));
+        try {
+          const commands = new Map<string, any>();
+          registerCommands(mockPi({ commands }));
+          const ctx = asExtensionContext({
+            cwd: project,
+            hasUI: true,
+            isProjectTrusted: () => true,
+            modelRegistry: modelRegistry(),
+            ui: modelPickerUi("For this project", notes, 2),
+          });
+
+          await commands.get("advisor-models").handler("", ctx);
+
+          expect(saved(agentDir).projectProfiles).toBeUndefined();
+          expect(notes.at(-1)).toContain(
+            "Saved Executor + Advisor configurations for all (global)"
+          );
+        } finally {
+          rmSync(project, { force: true, recursive: true });
+        }
+      }
+    );
+  });
+
+  test("keeps model selection global when Tab attempts scoped mode without trust", async () => {
+    await withAgentDir(
+      { advisor: "global/advisor", executor: "global/executor" },
+      async (agentDir) => {
+        const notes: string[] = [];
+        const project = mkdtempSync(join(tmpdir(), "pi-advisor-project-"));
+        try {
+          const commands = new Map<string, any>();
+          registerCommands(mockPi({ commands }));
+          const ctx = asExtensionContext({
+            cwd: project,
+            hasUI: true,
+            isProjectTrusted: () => false,
+            modelRegistry: modelRegistry(),
+            ui: modelPickerUi("For this project", notes),
+          });
+
+          await commands.get("advisor-models").handler("", ctx);
+
+          expect(notes).toContain(
+            "Project-scoped models require Pi Project Trust. Use /trust first."
+          );
+          expect(saved(agentDir).projectProfiles).toBeUndefined();
+        } finally {
+          rmSync(project, { force: true, recursive: true });
+        }
+      }
+    );
+  });
+
+  test("does not write to scoped target if trust is revoked before save", async () => {
+    await withAgentDir(
+      { advisor: "global/advisor", executor: "global/executor" },
+      async (agentDir) => {
+        const notes: string[] = [];
+        const project = mkdtempSync(join(tmpdir(), "pi-advisor-project-"));
+        let trusted = true;
+        try {
+          const commands = new Map<string, any>();
+          registerCommands(mockPi({ commands }));
+          const ctx = asExtensionContext({
+            cwd: project,
+            hasUI: true,
+            isProjectTrusted: () => trusted,
+            modelRegistry: modelRegistry(),
+            ui: modelPickerUi("For this project", notes, 1, () => {
+              trusted = false;
+            }),
+          });
+
+          await commands.get("advisor-models").handler("", ctx);
+
+          expect(saved(agentDir).projectProfiles).toBeUndefined();
+          expect(notes).toContain(
+            "Could not save Advisor models: Project profiles require Pi Project Trust."
+          );
+        } finally {
+          rmSync(project, { force: true, recursive: true });
         }
       }
     );

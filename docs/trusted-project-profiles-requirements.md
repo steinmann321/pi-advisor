@@ -67,28 +67,22 @@ Project Trust and profile selection are independent decisions. A trusted parent 
 
 ### Entry points and scope selection
 
-Extend `/advisor-models` and `/advisor-settings` with a scope selector before their existing dialogs:
+Add a Pi-style inline scope toggle to `/advisor-models` and `/advisor-settings`:
 
 ```text
-Which configuration do you want to edit?
-
-Global
-Default for projects without their own override.
-
-For this project
-/Users/jakob.steinmann/vscodeprojects/dealer
-Overrides global values for this directory and its descendants.
-
-Project profiles are stored in your Pi user configuration, not in the repository.
+Scope: all | scoped (/Users/jakob.steinmann/vscodeprojects/dealer)
+Tab: scope (all/scoped) · all = global settings
 ```
+
+`all` is the global persistence destination; `scoped` is the current trusted project's profile. This scope controls where changes are saved; it does not filter available models. Show the canonical absolute project path beside `scoped` throughout the interaction. Project profiles remain stored in user configuration, not in the repository.
 
 - Global editing remains available whether or not the current project is trusted.
 - Project editing is selectable only for a trusted project.
 - In an untrusted project, show the project option as unavailable with a brief instruction to use `/trust` first.
 - Do not grant trust automatically or modify Pi's trust decisions.
-- Cancelling scope selection changes nothing.
-- Selecting a scope alone changes nothing and does not activate a profile or switch a model.
-- Display the scope and target directory throughout the subsequent dialog.
+- Escape cancels the current dialog without changing the selected persistence target.
+- Toggling scope alone changes nothing, does not activate a profile, and does not switch a model.
+- Display the active scope and target directory in the existing dialog while users edit settings or choose models.
 
 ### Creating or editing a project profile
 

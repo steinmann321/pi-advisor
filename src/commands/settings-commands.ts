@@ -1,3 +1,4 @@
+import { canonicalProjectDirectory } from "../config/project-profiles.ts";
 import {
   alwaysOnRef,
   getAdvisorSettings,
@@ -24,7 +25,6 @@ import {
   resetProjectAdvisorSetting,
   saveScopedAdvisorSetting,
 } from "./settings-persistence.ts";
-import { selectSettingsScope } from "./settings-scope-selection.ts";
 import type { CommandRuntime } from "./types.ts";
 
 export const registerSettingsCommands = (runtime: CommandRuntime) => {
@@ -45,36 +45,55 @@ export const registerSettingsCommands = (runtime: CommandRuntime) => {
         );
         return;
       }
-      const selected = await selectSettingsScope(ctx);
-      if (!selected) {
-        return;
-      }
-
+      const projectPath = canonicalProjectDirectory(ctx.cwd);
+      let scope: SettingsEditScope = { kind: "global" };
       let initial: AdvisorSettings;
-      let scope: SettingsEditScope;
       try {
-        if (selected.kind === "global") {
-          initial = getGlobalAdvisorSettings(ctx);
-          scope = selected;
-        } else {
-          if (!loadCommandConfig(ctx)) {
-            return;
-          }
-          const profile = getProjectSettingsProfile(ctx);
-          initial = getAdvisorSettings();
-          scope = {
-            inheritedProfilePath: profile.inheritedProfilePath,
-            kind: "project" as const,
-            overrideKeys: profile.overrideKeys,
-            profileExists: profile.profileExists,
-            target: profile.target,
-          };
-        }
+        initial = getGlobalAdvisorSettings(ctx);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(`Could not load Advisor settings: ${message}`, "error");
         return;
       }
+      const toggleScope = (
+        current: SettingsEditScope | undefined
+      ):
+        | { scope: SettingsEditScope; settings: AdvisorSettings }
+        | undefined => {
+        try {
+          if (current?.kind === "project") {
+            const settings = getGlobalAdvisorSettings(ctx);
+            scope = { kind: "global" };
+            return { scope, settings };
+          }
+          if (!ctx.isProjectTrusted()) {
+            ctx.ui.notify(
+              "Project-scoped settings require Pi Project Trust. Use /trust first.",
+              "error"
+            );
+            return undefined;
+          }
+          if (!loadCommandConfig(ctx)) {
+            return undefined;
+          }
+          const profile = getProjectSettingsProfile(ctx);
+          const nextScope: SettingsEditScope = {
+            inheritedProfilePath: profile.inheritedProfilePath,
+            kind: "project",
+            overrideKeys: profile.overrideKeys,
+            profileExists: profile.profileExists,
+            target: profile.target,
+          };
+          const settings = getAdvisorSettings();
+          scope = nextScope;
+          return { scope, settings };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(`Could not switch Advisor scope: ${message}`, "error");
+          return undefined;
+        }
+      };
 
       await ctx.ui.custom<undefined>(
         (tui, theme, keybindings, done) =>
@@ -123,6 +142,7 @@ export const registerSettingsCommands = (runtime: CommandRuntime) => {
                 return undefined;
               }
             },
+            onScopeToggle: toggleScope,
             onSettingChange: (id, settings) => {
               try {
                 const saved = saveScopedAdvisorSetting(
@@ -146,6 +166,7 @@ export const registerSettingsCommands = (runtime: CommandRuntime) => {
             },
             presets: CONTEXT_PRESETS,
             scope,
+            scopeProjectPath: projectPath,
             theme,
             tui,
           })

@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 
+import { isScopeToggleKey, renderScopeHeader } from "./scope-toggle.ts";
 import {
   rainbowGradient,
   SIMPLE_MODE_GRADIENT_INTERVAL_MS,
@@ -26,7 +27,8 @@ import type {
 
 export class AdvisorSettingsSelector implements Component, Focusable {
   private readonly options: AdvisorSettingsSelectorOptions;
-  private readonly settings: AdvisorSettings;
+  private settings: AdvisorSettings;
+  private scope: AdvisorSettingsSelectorOptions["scope"];
   private readonly presets: ContextPreset[];
   private settingsList: SettingsListAdapter;
   private simpleModeGradientStartedAt: number | undefined;
@@ -45,6 +47,7 @@ export class AdvisorSettingsSelector implements Component, Focusable {
   constructor(options: AdvisorSettingsSelectorOptions) {
     this.options = options;
     this.settings = { ...options.initial };
+    this.scope = options.scope;
     const configuredContext = this.settings.contextMaxChars;
     this.presets = options.presets.some(
       (preset) => preset.value === configuredContext
@@ -77,27 +80,26 @@ export class AdvisorSettingsSelector implements Component, Focusable {
       "border",
       "─".repeat(Math.max(1, width))
     );
-    const { scope } = this.options;
-    let scopeLines: string[] = [];
-    if (scope?.kind === "project") {
-      scopeLines = [
-        this.options.theme.fg(
-          "muted",
-          `  Scope: For this project · ${scope.target}`
-        ),
-        this.options.theme.fg(
-          "dim",
-          `  Overrides marked in row detail. Backspace removes selected override.${scope.inheritedProfilePath ? ` Parent profile: ${scope.inheritedProfilePath}` : ""}`
-        ),
-      ];
-    } else if (scope) {
-      scopeLines = [
-        this.options.theme.fg(
-          "muted",
-          "  Scope: Global · defaults for projects without an override"
-        ),
-      ];
-    }
+    const { scope } = this;
+    const scopeLines = scope
+      ? [
+          ...renderScopeHeader(
+            this.options.theme,
+            width,
+            scope.kind === "project" ? "scoped" : "all",
+            this.options.scopeProjectPath ??
+              (scope.kind === "project" ? scope.target : "current project")
+          ),
+          ...(scope.kind === "project"
+            ? [
+                this.options.theme.fg(
+                  "dim",
+                  `  Overrides marked in row detail. Backspace removes selected override.${scope.inheritedProfilePath ? ` Parent profile: ${scope.inheritedProfilePath}` : ""}`
+                ),
+              ]
+            : []),
+        ]
+      : [];
     return [
       border,
       ...scopeLines,
@@ -107,6 +109,14 @@ export class AdvisorSettingsSelector implements Component, Focusable {
   }
 
   handleInput(keyData: string): void {
+    if (
+      isScopeToggleKey(keyData, this.options.keybindings) &&
+      this.options.onScopeToggle &&
+      !this.settingsList.submenuComponent
+    ) {
+      this.toggleScope();
+      return;
+    }
     const resetId =
       matchesKey(keyData, Key.backspace) || keyData === "\u007F"
         ? this.settingsList.selectedIdForReset()
@@ -123,7 +133,10 @@ export class AdvisorSettingsSelector implements Component, Focusable {
     this.options.tui.requestRender();
   }
 
-  private createSettingsList(selectedId?: string): SettingsListAdapter {
+  private createSettingsList(
+    selectedId?: string,
+    searchQuery?: string
+  ): SettingsListAdapter {
     const listTheme = getSettingsListTheme();
     const defaultLabel = listTheme.label;
     listTheme.label = (text, selected) => {
@@ -143,7 +156,7 @@ export class AdvisorSettingsSelector implements Component, Focusable {
       effortLevels: this.options.effortLevels,
       modelWhitelist,
       presets: this.presets,
-      scope: this.options.scope,
+      scope: this.scope,
       settings: this.settings,
       theme: this.options.theme,
       tui: this.options.tui,
@@ -157,6 +170,9 @@ export class AdvisorSettingsSelector implements Component, Focusable {
       { enableSearch: true }
     );
     const adapter = new SettingsListAdapter(list);
+    if (searchQuery) {
+      adapter.setSearchQuery(searchQuery);
+    }
     if (selectedId) {
       adapter.setSelectedId(items, selectedId);
     }
@@ -228,8 +244,29 @@ export class AdvisorSettingsSelector implements Component, Focusable {
     }
   }
 
+  private toggleScope(): void {
+    const next = this.options.onScopeToggle?.(this.scope);
+    if (!next) {
+      return;
+    }
+    const wasSimple = this.settings.simpleMode;
+    this.scope = next.scope;
+    this.settings = { ...next.settings };
+    if (wasSimple !== this.settings.simpleMode) {
+      if (this.settings.simpleMode) {
+        this.startSimpleModeGradient();
+      } else {
+        this.stopSimpleModeGradient();
+      }
+    }
+    const searchQuery = this.settingsList.searchQuery();
+    this.settingsList = this.createSettingsList(undefined, searchQuery);
+    this.settingsList.setFocused(this._focused);
+    this.options.tui.requestRender();
+  }
+
   private resetOverride(id: string): void {
-    const { scope } = this.options;
+    const { scope } = this;
     const key = settingConfigKey(id);
     if (
       scope?.kind !== "project" ||
@@ -243,7 +280,7 @@ export class AdvisorSettingsSelector implements Component, Focusable {
       return;
     }
     Object.assign(this.settings, settings);
-    this.options.scope = {
+    this.scope = {
       ...scope,
       overrideKeys: scope.overrideKeys.filter((override) => override !== key),
     };

@@ -42,6 +42,7 @@ import {
 } from "./model-options.ts";
 import { setPendingExecutorModelRef } from "./model-pending.ts";
 import { selectAdvisorModels } from "./model-picker.ts";
+import type { AdvisorModelPickerScopeState } from "./model-picker.ts";
 import { notify } from "./runtime.ts";
 import { selectSettingsScope } from "./settings-scope-selection.ts";
 import type { CommandRuntime, ThinkingLevel } from "./types.ts";
@@ -106,9 +107,6 @@ const choosePersistenceScope = (
   return selectSettingsScope(ctx);
 };
 
-const scopeLabel = (scope: PersistenceScope) =>
-  scope.kind === "global" ? "Global" : `For this project: ${scope.target}`;
-
 // oxlint-disable-next-line complexity -- activation combines argument, picker, validation, persistence, and runtime transitions.
 export const activateAdvisor = async (
   runtime: CommandRuntime,
@@ -146,6 +144,12 @@ export const activateAdvisor = async (
   const advisorOverride = hasAdvisorOverride(args);
   const contextOverride = hasContextMaxCharsOverride(args);
   const argumentError = parseArgs(args);
+  const explicitModels = {
+    advisor: advisorRef,
+    advisorEffort: advisorEffortRef,
+    executor: executorRef,
+    executorEffort: executorEffortRef,
+  };
   if (argumentError) {
     restoreRefs();
     notify(ctx, argumentError, "error");
@@ -170,9 +174,14 @@ export const activateAdvisor = async (
     prepared.pendingExecutor !== undefined ||
     prepared.selectAdvisor ||
     prepared.selectExecutor;
-  const scope = needsPersistence
-    ? await choosePersistenceScope(ctx, requestedScope)
-    : undefined;
+  const hasModelPicker = prepared.selectAdvisor || prepared.selectExecutor;
+  let scope: PersistenceScope | undefined;
+  if (needsPersistence) {
+    scope =
+      hasModelPicker && requestedScope === undefined
+        ? { kind: "global" }
+        : await choosePersistenceScope(ctx, requestedScope);
+  }
   if (needsPersistence && !scope) {
     restoreRefs();
     return;
@@ -180,21 +189,86 @@ export const activateAdvisor = async (
 
   let pickedModels = false;
   if (prepared.selectAdvisor || prepared.selectExecutor) {
-    const global = scope?.kind === "global" ? readGlobalConfig(ctx) : undefined;
+    if (!scope) {
+      restoreRefs();
+      return;
+    }
+    const scopeState = (
+      target: PersistenceScope
+    ): AdvisorModelPickerScopeState => {
+      if (target.kind === "global") {
+        const global = readGlobalConfig(ctx);
+        return {
+          advisor: advisorOverride ? explicitModels.advisor : global.advisor,
+          advisorEffort: advisorOverride
+            ? explicitModels.advisorEffort
+            : global.advisorEffort,
+          executor: executorOverride
+            ? explicitModels.executor
+            : (prepared.pendingExecutor ?? global.executor),
+          executorEffort: executorOverride
+            ? explicitModels.executorEffort
+            : global.executorEffort,
+          kind: "global",
+          label: "all (global)",
+          mode: "all",
+        };
+      }
+      return {
+        advisor: advisorRef,
+        advisorEffort: advisorEffortRef,
+        executor: executorRef,
+        executorEffort: executorEffortRef,
+        kind: "project",
+        label: `scoped (${target.target})`,
+        mode: "scoped",
+        target: target.target,
+      };
+    };
+    const togglePickerScope = (
+      current: AdvisorModelPickerScopeState
+    ): AdvisorModelPickerScopeState | undefined => {
+      if (!scope) {
+        return undefined;
+      }
+      if (current.kind === "project") {
+        scope = { kind: "global" };
+        return scopeState(scope);
+      }
+      if (!ctx.isProjectTrusted()) {
+        notify(
+          ctx,
+          "Project-scoped models require Pi Project Trust. Use /trust first.",
+          "error"
+        );
+        return undefined;
+      }
+      if (!loadCommandConfig(ctx)) {
+        return undefined;
+      }
+      scope = { kind: "project", target: canonicalProjectDirectory(ctx.cwd) };
+      const projectState = scopeState(scope);
+      if (advisorOverride) {
+        projectState.advisor = explicitModels.advisor;
+        projectState.advisorEffort = explicitModels.advisorEffort;
+      }
+      if (executorOverride) {
+        projectState.executor = explicitModels.executor;
+        projectState.executorEffort = explicitModels.executorEffort;
+      } else if (prepared.pendingExecutor) {
+        projectState.executor = prepared.pendingExecutor;
+      }
+      return projectState;
+    };
+    const initialScope = scopeState(scope);
     const selection = await selectAdvisorModels(ctx, {
-      advisor:
-        advisorOverride || scope?.kind !== "global"
-          ? advisorRef
-          : (global?.advisor ?? ""),
-      advisorEffort:
-        scope?.kind === "global" ? global?.advisorEffort : advisorEffortRef,
-      executor:
-        executorOverride || prepared.pendingExecutor || scope?.kind !== "global"
-          ? executorRef
-          : (global?.executor ?? ""),
-      executorEffort:
-        scope?.kind === "global" ? global?.executorEffort : executorEffortRef,
-      scopeLabel: scope ? scopeLabel(scope) : undefined,
+      advisor: initialScope.advisor,
+      advisorEffort: initialScope.advisorEffort,
+      executor: initialScope.executor,
+      executorEffort: initialScope.executorEffort,
+      onScopeToggle: togglePickerScope,
+      scope: initialScope,
+      scopeProjectPath: canonicalProjectDirectory(ctx.cwd),
       selectAdvisor: prepared.selectAdvisor,
       selectExecutor: prepared.selectExecutor,
     });
@@ -206,6 +280,16 @@ export const activateAdvisor = async (
     setAdvisorEffortRef(selection.advisorEffort);
     setExecutorRef(selection.executor);
     setExecutorEffortRef(selection.executorEffort);
+    if (selection.scope) {
+      scope =
+        selection.scope.kind === "project"
+          ? {
+              kind: "project",
+              target:
+                selection.scope.target ?? canonicalProjectDirectory(ctx.cwd),
+            }
+          : { kind: "global" };
+    }
     pickedModels = true;
   }
 

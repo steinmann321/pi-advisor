@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
-- **Trusted project profiles** — choose Global or For this project in Advisor settings and model dialogs. Trusted projects may save sparse path-associated overrides for every setting, including Executor/Advisor models, Scout, disclosure consent, and outcome logging, in user-owned `advisor.json`; repository `.pi/advisor.json` remains ignored. Profile failures show safe profile/model provenance without silently selecting another provider, while unrelated profile failures stay isolated.
+- **Trusted project profiles** — switch inline between `all` (global defaults) and `scoped` (current project path) with Tab in Advisor settings and model selection. Trusted projects may save sparse path-associated overrides for every setting, including Executor/Advisor models, Scout, disclosure consent, and outcome logging, in user-owned `advisor.json`; repository `.pi/advisor.json` remains ignored. Profile failures show safe profile/model provenance without silently selecting another provider, while unrelated profile failures stay isolated.
 
 ## 0.9.0 - 2026-09-28
 

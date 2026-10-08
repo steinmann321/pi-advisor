@@ -31,6 +31,14 @@ export class SettingsListAdapter {
     this.list.invalidate();
   }
 
+  searchQuery(): string {
+    return this.privateFields().searchInput?.getValue() ?? "";
+  }
+
+  setSearchQuery(value: string): void {
+    this.privateFields().searchInput?.setValue(value);
+  }
+
   render(width: number): string[] {
     return this.list.render(width);
   }
